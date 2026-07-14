@@ -2,7 +2,11 @@
 # 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v8.0.0 (25.12.1 TSAR BOMBA)
 # =====================================================================
 # 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存)。
-# 審核：確立自癒架構，修復進程屠宰邏輯，解鎖極限空間清理協議。
+# 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
+# 終極融合：
+# 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
+# 2. 升級 SOURCE_DATE_EPOCH 溯源與 find 精準提取 openwrt_release。
+# 3. 保留 LTS 專屬的沙皇空間清理、4G Swap 與自癒 Hash 架構。
 # =====================================================================
 
 name: Build ImmWrt v8.0.0-LTS
@@ -10,7 +14,7 @@ name: Build ImmWrt v8.0.0-LTS
 on:
   workflow_dispatch:
   schedule:
-    - cron: '26 14 * * 0,4' # HKT 22:26 (每週日、四)
+    - cron: '26 14 * * 0,4' # UTC 14:26 = HKT 22:26 (每週日、四)
 
 concurrency:
   group: immwrt-build
@@ -25,31 +29,43 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
 
+      - name: Generate Metadata
+        id: meta
+        run: echo "date=$(date +%Y%m%d || echo unknown)" >> $GITHUB_OUTPUT
+
       - name: Inject SRE Core Utilities
         run: |
           cat << 'EOF' > /tmp/sre_utils.sh
           #!/bin/bash
+          set -o pipefail
           retry() {
-            local max=5
-            local delay=2
-            local n=1
+            touch /tmp/retry_history.log /tmp/retry_debug.log
+            local max=5; local delay=2; local n=1
+            local cmd_name="$(printf '%q ' "$@")"
+            
             while true; do
-              "$@" 2>> /tmp/retry_debug.log && break || {
+              if "$@" >> /tmp/retry_debug.log 2>&1; then
+                echo "✅ Success!"
+                break
+              else
                 if [[ $n -lt $max ]]; then
-                  echo "⚠️ [FAIL] Attempt $n: $@" >> /tmp/retry_history.log
-                  ((n++))
-                  delay=$((delay * 2 + RANDOM % 3))
-                  sleep $delay
+                  echo "⚠️ [FAIL] Attempt $n: $cmd_name" >> /tmp/retry_history.log
+                  echo "⚠️ Failed! Retrying in $delay seconds..."
+                  ((n++)); delay=$((delay * 2 + RANDOM % 3)); sleep $delay
                 else
-                  exit 1
+                  echo "❌ FATAL: Failed after $max retries: $cmd_name"
+                  cat /tmp/retry_history.log
+                  echo "--- LAST 300 LINES OF ERROR LOG ---"
+                  tail -n 300 /tmp/retry_debug.log
+                  return 1
                 fi
-              }
+              fi
             done
           }
           EOF
@@ -59,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "=== 💥 啟動沙皇級核爆清理 (釋放終極極限空間) ==="
-          # ☢️ 追加清理 hostedtoolcache (GitHub 預裝工具包)、rust、powershell 等巨獸
+          # ☢️ 追加防呆安全網 || true，免疫 GitHub Runner 未來映像檔的目錄變更
           sudo rm -rf \
             /usr/share/dotnet \
             /usr/local/lib/android \
@@ -76,34 +92,16 @@ jobs:
             /opt/az \
             /usr/local/share/boost \
             /usr/local/share/chromium \
-            /usr/local/lib/heroku
+            /usr/local/lib/heroku || true
             
           sudo docker system prune -af || true
           sudo apt-get clean
           
           echo "=== 🚀 部署依賴與內存裝甲 ==="
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            flex \
-            bison \
-            g++ \
-            gawk \
-            gcc-multilib \
-            gettext \
-            git \
-            libncurses5-dev \
-            libssl-dev \
-            python3-distutils \
-            rsync \
-            unzip \
-            zlib1g-dev \
-            file \
-            wget \
-            jq \
-            golang-go
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq golang-go ccache
             
+          echo "▶️ [Step] Deploying 4G Swap Armor..."
           sudo swapoff -a || true
           sudo fallocate -l 4G /swapfile
           sudo chmod 600 /swapfile
@@ -111,6 +109,7 @@ jobs:
           sudo swapon /swapfile
           
           echo "=== 🧬 Deep ABI Fingerprint ===" > toolchain.info
+          echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> toolchain.info
           uname -r >> toolchain.info
           gcc --version | head -n 1 >> toolchain.info
           ld --version | head -n 1 >> toolchain.info
@@ -122,35 +121,26 @@ jobs:
         run: |
           set -euo pipefail
           source /tmp/sre_utils.sh
-          retry git clone -b v25.12.1 --single-branch --depth 1 \
-            https://github.com/immortalwrt/immortalwrt.git openwrt
+          
+          echo "▶️ [Step] Cloning ImmortalWrt 25.12.1 LTS Source..."
+          retry bash -c 'rm -rf openwrt && timeout 20m git clone -b v25.12.1 --single-branch --depth 1 https://github.com/immortalwrt/immortalwrt.git openwrt'
           cd openwrt
-          retry ./scripts/feeds update -a
+          
+          echo "▶️ [Step] Updating base feeds..."
+          retry timeout 35m ./scripts/feeds update -a
           
           # ✅ 終極物理防護 - 徹底切斷舊版供應鏈
-          ./scripts/feeds uninstall \
-            luci-app-passwall \
-            xray-core \
-            sing-box \
-            luci-app-upnp \
-            luci-app-advanced-reboot || true
-            
-          rm -rf feeds/luci/applications/luci-app-passwall
-          rm -rf feeds/packages/net/xray-core
-          rm -rf feeds/packages/net/sing-box
-          rm -rf package/feeds/luci/luci-app-passwall
-          rm -rf package/feeds/packages/xray-core
-          rm -rf package/feeds/packages/sing-box
+          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-upnp luci-app-advanced-reboot luci-app-fstab luci-app-plugins || true
+          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
+          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
           
-          # 🚀 拉取官方最新 PassWall
-          retry git clone --depth=1 \
-            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
-            package/openwrt-passwall-packages
-          retry git clone --depth=1 \
-            https://github.com/Openwrt-Passwall/openwrt-passwall.git \
-            package/openwrt-passwall
+          echo "▶️ [Step] Cloning Passwall ecosystem..."
+          retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
+          retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
             
-          retry ./scripts/feeds install -a -f
+          echo "▶️ [Step] Installing feeds..."
+          retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
+
           # =====================================================
           # 🔒 Stable Drift Control v1.1 (ADAPTIVE REVISION)
           # Goal: latest upstream + CI self-healing stability
@@ -181,33 +171,49 @@ jobs:
               echo "⚠️ $name: Artifact missing, keeping 'skip' to force build"
             fi
           }
+
           sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
           sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
           
           set -e
           echo "🔒 [SDC v1.1] Adaptive mode completed"
           # =====================================================
-          # 🚀 v3.38f 黃金定點抹除法 (掛載點)
-          ./scripts/feeds uninstall luci-app-fstab || true
-          rm -rf feeds/luci/applications/luci-app-fstab
-          rm -rf package/feeds/luci/luci-app-fstab
-          MENU_DIR="feeds/luci/modules/luci-mod-system/root/usr/share/luci/menu.d"
-          if [ -d "$MENU_DIR" ]; then
-            for f in $MENU_DIR/*.json; do
-              [ -f "$f" ] || continue
-              jq 'del(."admin/system/mounts", ."admin/services/mounts")' \
-                "$f" > "$f.tmp" && mv "$f.tmp" "$f" || true
-            done
-          fi
+
+          # 全域精準破壞前端選單殘留節點 (掛載點與插件)
+          find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
+            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins")' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || true
+          done
           
-          find feeds package -type d -name ".git" -print0 | while IFS= read -r -d '' gitdir; do
-            repo_path=$(dirname "$gitdir")
-            repo_root=$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null || true)
-            [ -n "$repo_root" ] && \
-              echo "commit: $(git -C "$repo_root" rev-parse HEAD) $repo_root"
-          done | sort -u > feeds.snapshot.txt
+          # 結構化 SBOM 生成
+          {
+            echo "=== 🧬 COMPONENT COMMIT ==="
+            echo "ImmortalWrt Commit: $(git rev-parse HEAD)"
+            echo "PassWall Commit: $(git -C package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "PassWall Packages Commit: $(git -C package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "=== 🧬 FEEDS LIST ==="
+            ./scripts/feeds list -f | sort
+            echo "=== 🧬 REPOS STATUS ==="
+            find package -maxdepth 2 -name .git -print0 | while IFS= read -r -d '' gitdir; do
+              repo=$(dirname "$gitdir")
+              echo "$(git -C "$repo" remote get-url origin 2>/dev/null):$(git -C "$repo" rev-parse HEAD)"
+            done | sort
+          } > ../feeds.snapshot.txt
           
-      - name: Generate Core Config (v3.36s List)
+      - name: Generate Cache Variables
+        id: var
+        run: echo "dl_key=dl-v8.0.0-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Restore Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/dl
+          key: ${{ steps.var.outputs.dl_key }}
+          restore-keys: |
+            dl-v8.0.0-
+            dl-
+            
+      - name: Generate Core Config
         run: |
           set -euo pipefail
           cd openwrt
@@ -255,37 +261,24 @@ jobs:
             echo "CONFIG_PACKAGE_kmod-nft-offload=y"
             echo "CONFIG_PACKAGE_block-mount=n"
             echo "CONFIG_PACKAGE_luci-app-fstab=n"
+            echo "CONFIG_PACKAGE_luci-app-plugins=n"
             echo "# CONFIG_CCACHE is not set"
           } > .config
-          make defconfig
-          ./scripts/diffconfig.sh > diffconfig.txt
+          make defconfig && ./scripts/diffconfig.sh > ../logs_diffconfig.txt
+          gzip -9f -c .config > ../logs_full.config.gz
           
-      - name: Generate Cache Variables
-        id: var
-        run: |
-          echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
-          # 🛡️ 恢復快照綁定：確保編譯指紋的精確性，利用 restore-keys 兜底命中
-          echo "dl_key=dl-v8.0.0-${{ hashFiles('openwrt/feeds.conf.default', 'openwrt/feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
-          
-      - name: Restore Cache
-        id: cache_restore
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            openwrt/dl
-          key: ${{ steps.var.outputs.dl_key }}
-          restore-keys: |
-            dl-v8.0.0-
-            
       - name: Build Firmware
         run: |
           set -euo pipefail
           source /tmp/sre_utils.sh
           cd openwrt
-          mkdir -p logs
-          [ -f feeds.snapshot.txt ] && \
-            cp feeds.snapshot.txt logs/snapshot.sbom || true
-          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct || date +%s)
+          
+          # 提取最新 component commit timestamp 作為基準 (與 Snapshot 統一，最高精度)
+          IMM_DATE=$(git log -1 --format=%ct)
+          PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
+          PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
+          export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
           
           # ==========================================
           # 📡 啟動 SRE 駕駛艙雷達
@@ -294,7 +287,6 @@ jobs:
           cleanup_monitor() {
             echo "🧹 關閉駕駛艙雷達..."
             [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
-            # 🛡️ 殭屍進程防禦 (嚴謹工業寫法)：使用 xargs 避免空 PID 報錯
             jobs -p | xargs -r kill -9 2>/dev/null || true
           }
           trap cleanup_monitor EXIT INT TERM
@@ -312,16 +304,18 @@ jobs:
           MONITOR_PID=$!
           # ==========================================
           
-          for i in 1 2 3; do
-            make download -j$(nproc) && break || {
-              sleep $((i * 5))
-            }
-            [ $i -eq 3 ] && make download -j1 V=s
-          done
-          if ! make -j$(nproc) 2>&1 | tee logs/build.log; then
+          echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
+          retry bash -c 'timeout 30m make download -j$(nproc) V=s'
+          
+          FAST_BUILD_STATUS="SUCCESS"
+          echo "▶️ [Step] Starting main compilation..."
+          if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
+            FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
+            echo "FAST_BUILD_FAILED=true" > ../build-status.txt
             rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
-            make -j1 V=s 2>&1 | tee logs/build-debug.log || exit 1
+            make -j1 V=s 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
           fi
+          echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
           
       - name: Save Cache
         uses: actions/cache/save@v4
@@ -331,19 +325,72 @@ jobs:
             openwrt/dl
           key: ${{ steps.var.outputs.dl_key }}
 
-      - name: Validate & Final SBOM
+      - name: Validate & Final Packaging
         run: |
           set -euo pipefail
-          cd openwrt/bin/targets/x86/64/
-          find . -name "*combined*.img.gz" -type f | sort | \
-            xargs sha256sum > manifest.txt || true
-          sha256sum --ignore-missing -c sha256sums || true
-          mv manifest.txt ../../../../logs/ || true
+          ROOT="$(pwd)"
+          TARGET_DIR="openwrt/bin/targets/x86/64"
+          mkdir -p release_assets
+          
+          [ -d "$TARGET_DIR" ] || exit 1
+          cd "$TARGET_DIR"
+          sha256sum --ignore-missing -c sha256sums || exit 1
+          find . -name "*combined*.img.gz" -exec install -m644 {} "$ROOT/release_assets/" \;
+          install -m644 sha256sums "$ROOT/release_assets/sha256sums"
+          
+          cd "$ROOT"
+          [ -z "$(find release_assets -type f -name "*combined*.img.gz")" ] && { echo "Firmware missing!"; exit 1; }
+          
+          find openwrt/bin/targets/x86/64 -name "*.manifest" -exec sh -c 'echo "=== $(basename "$1") ==="; cat "$1"; echo' _ {} \; > release_assets/installed-packages.txt
+          [ -s release_assets/installed-packages.txt ] || rm -f release_assets/installed-packages.txt
+          
+          find openwrt/bin/packages -name "*.apk" | sort > release_assets/apk-list.txt
+          [ -s release_assets/apk-list.txt ] || rm -f release_assets/apk-list.txt
+          
+          # 🚀 防禦性 find：免疫目錄結構變更，提取最終產物之真實指紋
+          OW_RELEASE=$(find openwrt/build_dir -name openwrt_release -path "*/etc/openwrt_release" -print -quit 2>/dev/null || true)
+          if [ -n "$OW_RELEASE" ] && [ -f "$OW_RELEASE" ]; then
+            OW_REV=$(grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown")
+          else
+            OW_REV="unknown"
+          fi
+          [ -z "$OW_REV" ] && OW_REV="unknown"
+          
+          cat << EOF > release_assets/build-info.txt
+          Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          Branch: v25.12.1-LTS
+          OpenWrt Version: $OW_REV
+          Workflow Run ID: ${{ github.run_id }}
+          Runner OS: ${{ runner.os }}
+          Runner Image OS: ${ImageOS:-unknown}
+          Runner Image Version: ${ImageVersion:-unknown}
+          Runner Arch: $(uname -m)
+          Kernel: $(uname -r)
+          CPU: $(nproc) cores
+          Memory: $(free -h | awk '/Mem:/ {print $2}')
+          SOURCE_DATE_EPOCH: $(grep SOURCE_DATE_EPOCH toolchain.info | cut -d= -f2 || echo unknown)
+          ImmortalWrt Commit: $(git -C openwrt rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Commit: $(git -C openwrt/package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Packages Commit: $(git -C openwrt/package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)
+          Fast Build Status: $(cat build-status.txt 2>/dev/null || echo "UNKNOWN")
+          EOF
+          
+          [ -s feeds.snapshot.txt ] && install -m644 feeds.snapshot.txt release_assets/feeds.snapshot
+          [ -s toolchain.info ] && install -m644 toolchain.info release_assets/toolchain.info
+          [ -s logs_full.config.gz ] && install -m644 logs_full.config.gz release_assets/full.config.gz
+          [ -s logs_diffconfig.txt ] && install -m644 logs_diffconfig.txt release_assets/diffconfig.txt
+          [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
+          [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
+          [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
+          [ -s /tmp/retry_history.log ] && install -m644 /tmp/retry_history.log release_assets/
+          [ -s /tmp/retry_debug.log ] && gzip -9 -c /tmp/retry_debug.log > release_assets/retry_debug.log.gz || true
+          
+          find release_assets -type f -empty -print -delete
           
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v8.0.0-LTS-b${{ github.run_number }}-${{ steps.var.outputs.date }}
+          tag_name: v8.0.0-LTS-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
           name: ImmWrt v8.0.0-LTS (TSAR BOMBA SEALED)
           body: |
             ### 🔒 v8.0.0-LTS TSAR BOMBA SEALED
@@ -353,10 +400,7 @@ jobs:
             - **指紋溯源**：Cache Key 恢復 snapshot 綁定，兼顧嚴謹的可重現建構與緩存效率。
             - **25.12.1 正式版對齊**：全面切換至 ImmortalWrt 25.12.1 正式版母體。
             - **SRE 雷達監控**：升級複合儀表板，背景心跳即時回傳負載、記憶體百分比與磁碟探針，防禦 GitHub 靜默超時。
-          files: |
-            openwrt/bin/targets/x86/64/*combined*.img.gz
-            openwrt/bin/targets/x86/64/sha256sums
-            openwrt/logs/manifest.txt
-            openwrt/logs/snapshot.sbom
+            - **全域可觀測性**：導入 Snapshot 級別的考古履歷 (SBOM、installed-packages清單、防禦性 find 提取根目錄產物版本號)。
+          files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
