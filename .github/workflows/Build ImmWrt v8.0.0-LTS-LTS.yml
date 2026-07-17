@@ -14,7 +14,7 @@ name: Build ImmWrt v8.0.0-LTS
 on:
   workflow_dispatch:
   schedule:
-    - cron: '26 14 * * 0,4' # UTC 14:26 = HKT 22:26 (每週日、四)
+    - cron: '26 14 * * 0,4'# UTC 14:26 = HKT 22:26 (每週日、四)
 
 concurrency:
   group: immwrt-build
