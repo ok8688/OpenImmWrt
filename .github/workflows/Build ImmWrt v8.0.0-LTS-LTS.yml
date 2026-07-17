@@ -68,30 +68,30 @@ jobs:
           BIN_DIR="$PKG_DIR/files/usr/bin"
           mkdir -p "$BIN_DIR"
           cat << 'EOF' > "$BIN_DIR/ib"
-          #!/bin/sh
-          VERSION="1.0"
-          BACKUP="/root/immwrt-backup-latest.tar.gz"
-          WORK="/tmp/ib-work"
-          SAFETY="/tmp/ib-safety"
-          FILES="/etc/config/Argon /etc/config/ddns /etc/config/dhcp /etc/config/firewall /etc/config/luci /etc/config/network /etc/config/passwall /etc/config/passwall_server /etc/config/smartdns /etc/config/system /etc/config/upnpd /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip /etc/crontabs/root"
-          fail(){ echo "FAILED: $1"; exit "$2"; }
-          fail_backup(){ rm -f "$BACKUP.tmp"; safe_rm "$WORK"; fail "$1" "$2"; }
-          fail_restore(){ safe_rm "$WORK"; safe_rm "$SAFETY"; fail "$1" "$2"; }
-          safe_rm(){ case "$1" in /tmp/ib-work|/tmp/ib-safety) rm -rf "$1" ;; *) fail "safe_rm aborted" 1 ;; esac; }
-          check_root(){ [ "$(id -u)" = "0" ] || fail "root required" 1; }
-          check_files(){ for f in $FILES; do [ -f "$f" ] || fail "missing file: $f" 3; done; }
-          create_manifest(){ : > "$1"; for f in $FILES; do echo "$f" >> "$1"; done; }
-          create_checksum(){ : > "$1"; for f in $FILES; do sha256sum "files$f" >> "$1" || fail_backup "checksum build failed" 4; done; }
-          verify_manifest(){ expected="$WORK/manifest.expected"; create_manifest "$expected"; cmp "$expected" manifest.txt || fail_restore "manifest mismatch" 5; rm -f "$expected"; }
-          verify_checksum(){ sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_restore "checksum mismatch" 5; }
-          verify_restored(){ for f in $FILES; do [ -f "$f" ] || return 1; hash_src=$(sha256sum "files$f" | cut -d' ' -f1); hash_dst=$(sha256sum "$f" | cut -d' ' -f1); [ "$hash_src" != "$hash_dst" ] && return 1; done; return 0; }
-          restore_safety(){ safe_rm "$SAFETY"; mkdir -p "$SAFETY/files"; : > "$SAFETY/state.txt"; for f in $FILES; do if [ -f "$f" ]; then mkdir -p "$(dirname "$SAFETY/files$f")"; cp "$f" "$SAFETY/files$f" || fail_restore "safety copy failed" 1; echo "EXIST $f" >> "$SAFETY/state.txt"; elif [ -e "$f" ]; then fail_restore "INVALID STATE: $f is not file" 7; else echo "MISSING $f" >> "$SAFETY/state.txt"; fi; done; }
-          restore_safety_back(){ status=0; while read -r state f; do if [ "$state" = "EXIST" ]; then rm -rf "$f"; cp "$SAFETY/files$f" "$f" || { echo "CRITICAL: restore failed"; status=1; }; elif [ "$state" = "MISSING" ]; then rm -rf "$f"; fi; done < "$SAFETY/state.txt"; [ "$status" -eq 1 ] && { echo "CRITICAL: Rollback incomplete."; return 1; }; return 0; }
-          backup(){ check_files; safe_rm "$WORK"; rm -f "$BACKUP.tmp"; mkdir -p "$WORK/files"; for f in $FILES; do mkdir -p "$(dirname "$WORK/files$f")"; cp "$f" "$WORK/files$f" || fail_backup "copy failed" 1; done; cd "$WORK" || fail_backup "cd failed" 1; create_manifest "manifest.txt"; create_checksum "checksum.sha256"; tar -czf "$BACKUP.tmp" files manifest.txt checksum.sha256 || fail_backup "tar failed" 1; tar -tzf "$BACKUP.tmp" >/dev/null || fail_backup "verify failed" 4; mv "$BACKUP.tmp" "$BACKUP"; safe_rm "$WORK"; echo "Backup completed"; }
-          reload_services(){ /etc/init.d/network restart; /etc/init.d/firewall reload; /etc/init.d/smartdns restart; /etc/init.d/passwall restart; }
-          restore(){ [ -f "$BACKUP" ] || fail "not found" 5; safe_rm "$WORK"; mkdir -p "$WORK"; tar -xzf "$BACKUP" -C "$WORK" || fail_restore "extract failed" 5; cd "$WORK" || fail_restore "cd failed" 5; verify_manifest; verify_checksum; restore_safety; for f in $FILES; do mkdir -p "$(dirname "$f")"; rm -rf "$f"; cp "files$f" "$f" || { ! restore_safety_back && fail_restore "rollback failed" 6 || fail_restore "rollback success" 6; }; done; ! verify_restored && { ! restore_safety_back && fail_restore "verify failed - rollback failed" 6 || fail_restore "verify failed - rollback success" 6; }; reload_services; safe_rm "$SAFETY"; safe_rm "$WORK"; echo "Restore completed"; }
-          case "$1" in b) check_root; backup ;; r) check_root; restore ;; *) echo "Usage: ib {b|r}"; exit 2 ;; esac
-          EOF
+#!/bin/sh
+VERSION="1.0"
+BACKUP="/root/immwrt-backup-latest.tar.gz"
+WORK="/tmp/ib-work"
+SAFETY="/tmp/ib-safety"
+FILES="/etc/config/Argon /etc/config/ddns /etc/config/dhcp /etc/config/firewall /etc/config/luci /etc/config/network /etc/config/passwall /etc/config/passwall_server /etc/config/smartdns /etc/config/system /etc/config/upnpd /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip /etc/crontabs/root"
+fail(){ echo "FAILED: $1"; exit "$2"; }
+fail_backup(){ rm -f "$BACKUP.tmp"; safe_rm "$WORK"; fail "$1" "$2"; }
+fail_restore(){ safe_rm "$WORK"; safe_rm "$SAFETY"; fail "$1" "$2"; }
+safe_rm(){ case "$1" in /tmp/ib-work|/tmp/ib-safety) rm -rf "$1" ;; *) fail "safe_rm aborted" 1 ;; esac; }
+check_root(){ [ "$(id -u)" = "0" ] || fail "root required" 1; }
+check_files(){ for f in $FILES; do [ -f "$f" ] || fail "missing file: $f" 3; done; }
+create_manifest(){ : > "$1"; for f in $FILES; do echo "$f" >> "$1"; done; }
+create_checksum(){ : > "$1"; for f in $FILES; do sha256sum "files$f" >> "$1" || fail_backup "checksum build failed" 4; done; }
+verify_manifest(){ expected="$WORK/manifest.expected"; create_manifest "$expected"; cmp "$expected" manifest.txt || fail_restore "manifest mismatch" 5; rm -f "$expected"; }
+verify_checksum(){ sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_restore "checksum mismatch" 5; }
+verify_restored(){ for f in $FILES; do [ -f "$f" ] || return 1; hash_src=$(sha256sum "files$f" | cut -d' ' -f1); hash_dst=$(sha256sum "$f" | cut -d' ' -f1); [ "$hash_src" != "$hash_dst" ] && return 1; done; return 0; }
+restore_safety(){ safe_rm "$SAFETY"; mkdir -p "$SAFETY/files"; : > "$SAFETY/state.txt"; for f in $FILES; do if [ -f "$f" ]; then mkdir -p "$(dirname "$SAFETY/files$f")"; cp "$f" "$SAFETY/files$f" || fail_restore "safety copy failed" 1; echo "EXIST $f" >> "$SAFETY/state.txt"; elif [ -e "$f" ]; then fail_restore "INVALID STATE: $f is not file" 7; else echo "MISSING $f" >> "$SAFETY/state.txt"; fi; done; }
+restore_safety_back(){ status=0; while read -r state f; do if [ "$state" = "EXIST" ]; then rm -rf "$f"; cp "$SAFETY/files$f" "$f" || { echo "CRITICAL: restore failed"; status=1; }; elif [ "$state" = "MISSING" ]; then rm -rf "$f"; fi; done < "$SAFETY/state.txt"; [ "$status" -eq 1 ] && { echo "CRITICAL: Rollback incomplete."; return 1; }; return 0; }
+backup(){ check_files; safe_rm "$WORK"; rm -f "$BACKUP.tmp"; mkdir -p "$WORK/files"; for f in $FILES; do mkdir -p "$(dirname "$WORK/files$f")"; cp "$f" "$WORK/files$f" || fail_backup "copy failed" 1; done; cd "$WORK" || fail_backup "cd failed" 1; create_manifest "manifest.txt"; create_checksum "checksum.sha256"; tar -czf "$BACKUP.tmp" files manifest.txt checksum.sha256 || fail_backup "tar failed" 1; tar -tzf "$BACKUP.tmp" >/dev/null || fail_backup "verify failed" 4; mv "$BACKUP.tmp" "$BACKUP"; safe_rm "$WORK"; echo "Backup completed"; }
+reload_services(){ /etc/init.d/network restart; /etc/init.d/firewall reload; /etc/init.d/smartdns restart; /etc/init.d/passwall restart; }
+restore(){ [ -f "$BACKUP" ] || fail "not found" 5; safe_rm "$WORK"; mkdir -p "$WORK"; tar -xzf "$BACKUP" -C "$WORK" || fail_restore "extract failed" 5; cd "$WORK" || fail_restore "cd failed" 5; verify_manifest; verify_checksum; restore_safety; for f in $FILES; do mkdir -p "$(dirname "$f")"; rm -rf "$f"; cp "files$f" "$f" || { ! restore_safety_back && fail_restore "rollback failed" 6 || fail_restore "rollback success" 6; }; done; ! verify_restored && { ! restore_safety_back && fail_restore "verify failed - rollback failed" 6 || fail_restore "verify failed - rollback success" 6; }; reload_services; safe_rm "$SAFETY"; safe_rm "$WORK"; echo "Restore completed"; }
+case "$1" in b) check_root; backup ;; r) check_root; restore ;; *) echo "Usage: ib {b|r}"; exit 2 ;; esac
+EOF
           chmod +x "$BIN_DIR/ib"
           cat << 'EOF' > "$PKG_DIR/Makefile"
 include $(TOPDIR)/rules.mk
