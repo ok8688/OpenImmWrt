@@ -88,7 +88,7 @@ jobs:
           sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
           set -e
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
-            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins")' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || true
+            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
           {
             echo "=== 🧬 COMPONENT COMMIT ==="
@@ -193,11 +193,31 @@ jobs:
           PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct >/dev/null 2>&1 || echo "$IMM_DATE")
           export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
+          
+          # ==========================================
+          # 📡 恢復 SRE 駕駛艙雷達 (含磁碟探針)
+          # ==========================================
           MONITOR_PID=""
-          cleanup_monitor() { [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true; jobs -p | xargs -r kill -9 2>/dev/null || true; }
+          cleanup_monitor() {
+            echo "🧹 關閉駕駛艙雷達..."
+            [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
+            jobs -p | xargs -r kill -9 2>/dev/null || true
+          }
           trap cleanup_monitor EXIT INT TERM
-          ( while true; do echo "[MONITOR] $(uptime | awk -F'load average:' '{print $2}' | xargs) | $(free -m | awk '/Mem:/ {printf "%d/%dMB", $3, $2}')"; sleep 120 || true; done ) &
+          
+          (
+            echo "📡 BUILD MONITOR START"
+            while true; do
+              LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+              MEM=$(free -m | awk '/Mem:/ {printf "%d/%dMB | %.0f%%", $3, $2, ($3/$2)*100}')
+              DISK=$(df -h / | awk 'NR==2 {print $5}')
+              echo "[MONITOR]  $LOAD | $MEM | DISK: $DISK"
+              sleep 120 || true
+            done
+          ) &
           MONITOR_PID=$!
+          # ==========================================
+          
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
           if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
             rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
@@ -244,6 +264,7 @@ jobs:
             ### 🔒 v8.0.1-LTS TSAR BOMBA SEALED
             - 升級版本號至 v8.0.1-LTS。
             - 注入原生 IB 備份工具至 base-files，實現完全解耦的 CI/CD 注入模式。
+            - 增強 JSON 解析韌性，修復 build 過程中的選單殘留誤報問題。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
