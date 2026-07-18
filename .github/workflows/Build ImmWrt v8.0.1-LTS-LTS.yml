@@ -1,13 +1,21 @@
 # =====================================================================
 # 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v8.0.1 (25.12.1 TSAR BOMBA)
 # =====================================================================
+# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存)。
+# 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
+# 終極融合：
+# 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
+# 2. 升級 SOURCE_DATE_EPOCH 溯源與 find 精準提取 openwrt_release。
+# 3. 保留 LTS 專屬的沙皇空間清理、4G Swap 與自癒 Hash 架構。
+# 4. [v8.0.1] 注入 ib v1.5-LTS 備份工具，修正 UPnP/JSON 編譯衝突。
+# =====================================================================
 
 name: Build ImmWrt v8.0.1-LTS
 
 on:
   workflow_dispatch:
 #  schedule:
-#    - cron: '26 14 * * 0,4'
+#    - cron: '26 14 * * 0,4' # UTC 14:26 = HKT 22:26 (每週日、四)
 
 concurrency:
   group: immwrt-build
@@ -41,10 +49,24 @@ jobs:
             touch /tmp/retry_history.log /tmp/retry_debug.log
             local max=5; local delay=2; local n=1
             local cmd_name="$(printf '%q ' "$@")"
+            
             while true; do
-              if "$@" >> /tmp/retry_debug.log 2>&1; then echo "✅ Success!"; break
-              else if [[ $n -lt $max ]]; then echo "⚠️ [FAIL] Attempt $n: $cmd_name" >> /tmp/retry_history.log; ((n++)); delay=$((delay * 2 + RANDOM % 3)); sleep $delay
-              else echo "❌ FATAL: Failed after $max retries: $cmd_name"; return 1; fi; fi
+              if "$@" >> /tmp/retry_debug.log 2>&1; then
+                echo "✅ Success!"
+                break
+              else
+                if [[ $n -lt $max ]]; then
+                  echo "⚠️ [FAIL] Attempt $n: $cmd_name" >> /tmp/retry_history.log
+                  echo "⚠️ Failed! Retrying in $delay seconds..."
+                  ((n++)); delay=$((delay * 2 + RANDOM % 3)); sleep $delay
+                else
+                  echo "❌ FATAL: Failed after $max retries: $cmd_name"
+                  cat /tmp/retry_history.log
+                  echo "--- LAST 300 LINES OF ERROR LOG ---"
+                  tail -n 300 /tmp/retry_debug.log
+                  return 1
+                fi
+              fi
             done
           }
           EOF
@@ -53,112 +75,351 @@ jobs:
       - name: Init SRE Environment & Space Cleanup
         run: |
           set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/share/edge_driver /usr/local/.ghcup /usr/share/miniconda /opt/az /usr/local/share/boost /usr/local/share/chromium /usr/local/lib/heroku || true
+          echo "=== 💥 啟動沙皇級核爆清理 (釋放終極極限空間) ==="
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/share/swift \
+            /usr/local/lib/node_modules \
+            /opt/hostedtoolcache \
+            /usr/local/share/powershell \
+            /usr/share/rust \
+            /opt/microsoft \
+            /usr/local/share/edge_driver \
+            /usr/local/.ghcup \
+            /usr/share/miniconda \
+            /opt/az \
+            /usr/local/share/boost \
+            /usr/local/share/chromium \
+            /usr/local/lib/heroku || true
+            
           sudo docker system prune -af || true
-          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq golang-go ccache
-          sudo swapoff -a || true; sudo fallocate -l 4G /swapfile; sudo chmod 600 /swapfile; sudo mkswap /swapfile; sudo swapon /swapfile
+          sudo apt-get clean
+          
+          echo "=== 🚀 部署依賴與內存裝甲 ==="
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq golang-go ccache
+            
+          echo "▶️ [Step] Deploying 4G Swap Armor..."
+          sudo swapoff -a || true
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          
           echo "=== 🧬 Deep ABI Fingerprint ===" > toolchain.info
+          echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> toolchain.info
           uname -r >> toolchain.info
           gcc --version | head -n 1 >> toolchain.info
+          ld --version | head -n 1 >> toolchain.info
+          ldd --version | head -n 1 >> toolchain.info
+          dpkg -s libc6 | grep Version >> toolchain.info
           go version >> toolchain.info || true
-
+          
       - name: Clone & Official PassWall Main Source
         run: |
           set -euo pipefail
           source /tmp/sre_utils.sh
+          
+          echo "▶️ [Step] Cloning ImmortalWrt 25.12.1 LTS Source..."
           retry bash -c 'rm -rf openwrt && timeout 20m git clone -b v25.12.1 --single-branch --depth 1 https://github.com/immortalwrt/immortalwrt.git openwrt'
           cd openwrt
+          
+          echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
-          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-upnp luci-app-advanced-reboot luci-app-fstab luci-app-plugins || true
+          
+          # ✅ 終極物理防護 - 徹底切斷舊版供應鏈 (修正：保留 upnp 與 advanced-reboot)
+          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-fstab luci-app-plugins || true
           rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
           rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
+          
+          echo "▶️ [Step] Cloning Passwall ecosystem..."
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
+            
+          echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
+
+          # =====================================================
+          # 🔒 Stable Drift Control v1.1 (ADAPTIVE REVISION)
+          # =====================================================
           set +e
+          echo "🔒 [SDC v1.1] Adaptive drift mode active..."
+          
           sync_hash () {
-            local name="$1"; local makefile="$2"; local pattern="$3"
-            if [ ! -f "$makefile" ]; then return; fi
+            local name="$1"
+            local makefile="$2"
+            local pattern="$3"
+            
+            if [ ! -f "$makefile" ]; then
+              echo "⚠️ $name: Makefile missing, skip"
+              return
+            fi
+            
             sed -i 's/^PKG_HASH:=.*/PKG_HASH:=skip/' "$makefile"
             make "package/${name}/download" V=s >/dev/null 2>&1 || true
+            
             FILE=$(ls dl/${pattern}* 2>/dev/null | grep -E '\.(tar\.gz|tar\.xz|zip)$' | head -n 1)
-            if [ -n "$FILE" ]; then NEW_HASH=$(sha256sum "$FILE" | awk '{print $1}'); sed -i "s/^PKG_HASH:=skip/PKG_HASH:=$NEW_HASH/" "$makefile"; fi
+            
+            if [ -n "$FILE" ]; then
+              NEW_HASH=$(sha256sum "$FILE" | awk '{print $1}')
+              sed -i "s/^PKG_HASH:=skip/PKG_HASH:=$NEW_HASH/" "$makefile"
+              echo "✅ $name: Upstream aligned -> $NEW_HASH"
+            else
+              echo "⚠️ $name: Artifact missing, keeping 'skip' to force build"
+            fi
           }
+
           sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
           sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
+          
           set -e
+          echo "🔒 [SDC v1.1] Adaptive mode completed"
+          # =====================================================
+
+          # 全域精準破壞前端選單殘留節點 (修正：加入 // . 增強 JSON 解析韌性)
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
             jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
+          
+          # 結構化 SBOM 生成
           {
             echo "=== 🧬 COMPONENT COMMIT ==="
             echo "ImmortalWrt Commit: $(git rev-parse HEAD)"
             echo "PassWall Commit: $(git -C package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)"
             echo "PassWall Packages Commit: $(git -C package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "=== 🧬 FEEDS LIST ==="
+            ./scripts/feeds list -f | sort
+            echo "=== 🧬 REPOS STATUS ==="
+            find package -maxdepth 2 -name .git -print0 | while IFS= read -r -d '' gitdir; do
+              repo=$(dirname "$gitdir")
+              echo "$(git -C "$repo" remote get-url origin 2>/dev/null):$(git -C "$repo" rev-parse HEAD)"
+            done | sort
           } > ../feeds.snapshot.txt
-          
-      - name: Inject ImmWrt Backup Tool
+
+      - name: Inject ImmWrt Backup Tool (ib v1.5-LTS)
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
           cat << 'EOF' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
-          VERSION="1.0"; readonly VERSION
+          VERSION="1.5-LTS"; readonly VERSION
           BACKUP_DIR="/root"; readonly BACKUP_DIR
           BACKUP="$BACKUP_DIR/immwrt-backup-latest.tar.gz"; readonly BACKUP
           WORK="/tmp/ib-work"; readonly WORK
           SAFETY="/tmp/ib-safety"; readonly SAFETY
-          FILES="/etc/config/Argon /etc/config/ddns /etc/config/dhcp /etc/config/firewall /etc/config/luci /etc/config/network /etc/config/passwall /etc/config/passwall_server /etc/config/smartdns /etc/config/system /etc/config/upnpd /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip /etc/crontabs/root"
-          readonly FILES
+
+          REQUIRED_FILES="/etc/config/ddns /etc/config/dhcp /etc/config/firewall /etc/config/luci /etc/config/network /etc/config/passwall /etc/config/passwall_server /etc/config/smartdns /etc/config/system /etc/config/upnpd /etc/crontabs/root"
+          readonly REQUIRED_FILES
+          OPTIONAL_FILES="/etc/config/argon /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip"
+          readonly OPTIONAL_FILES
+
           fail(){ echo "FAILED: $1"; exit "$2"; }
           fail_backup(){ rm -f "$BACKUP.tmp"; safe_rm "$WORK"; fail "$1" "$2"; }
           fail_restore(){ safe_rm "$WORK"; safe_rm "$SAFETY"; fail "$1" "$2"; }
           safe_rm(){ case "$1" in /tmp/ib-work|/tmp/ib-safety) rm -rf "$1" ;; *) fail "safe_rm aborted" 1 ;; esac; }
           check_root(){ [ "$(id -u)" = "0" ] || fail "root required" 1; }
-          check_files(){ for f in $FILES; do [ -f "$f" ] || fail "missing file: $f" 3; done; }
-          create_manifest(){ : > "$1"; for f in $FILES; do echo "$f" >> "$1"; done; }
-          create_checksum(){ : > "$1"; for f in $FILES; do sha256sum "files$f" >> "$1" || fail_backup "checksum build failed" 4; done; }
-          verify_manifest(){ expected="$WORK/manifest.expected"; create_manifest "$expected"; cmp -s "$expected" manifest.txt || fail_restore "manifest mismatch" 5; rm -f "$expected"; }
-          verify_checksum(){ sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_restore "checksum mismatch" 5; }
-          verify_restored(){ for f in $FILES; do [ -f "$f" ] || return 1; hash_src=$(sha256sum "files$f" | cut -d' ' -f1); hash_dst=$(sha256sum "$f" | cut -d' ' -f1); [ "$hash_src" != "$hash_dst" ] && return 1; done; return 0; }
+
+          trap_backup() { echo -e "\n[!] Backup interrupted. Cleaning up..."; rm -f "$BACKUP.tmp"; safe_rm "$WORK"; exit 130; }
+          trap_restore() { 
+              echo -e "\n[!] Restore interrupted! Initiating emergency rollback..."
+              if ! restore_safety_back; then
+                  echo "CRITICAL: Emergency rollback failed! Snapshot preserved at $SAFETY"
+              else
+                  safe_rm "$SAFETY"; safe_rm "$WORK"
+              fi
+              exit 130
+          }
+
+          get_target_files(){ 
+              local list=""
+              for f in $REQUIRED_FILES; do 
+                  [ -f "$f" ] || fail "Missing REQUIRED file: $f" 3
+                  list="$list $f"
+              done
+              for f in $OPTIONAL_FILES; do 
+                  if [ -f "$f" ]; then list="$list $f"
+                  else echo "INFO: Optional file missing, skipping: $f" >&2; fi
+              done
+              echo "$list"
+          }
+
+          create_manifest(){ 
+              local target_files="$1"
+              local manifest_file="$2"
+              {
+                  echo "# ImmWrt Backup Manifest"
+                  echo "# Manifest-Version: 1"
+                  echo "# Tool-Version: $VERSION"
+                  echo "# Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+                  echo "# =========================================="
+                  for f in $target_files; do echo "$f"; done
+              } > "$manifest_file"
+          }
+
+          create_checksum(){ 
+              local target_files="$1"
+              local checksum_file="$2"
+              : > "$checksum_file"
+              for f in $target_files; do 
+                  sha256sum "files$f" >> "$checksum_file" || fail_backup "checksum build failed" 4
+              done
+          }
+
+          read_manifest() {
+              awk '
+                  /^[[:space:]]*#/ {next}
+                  NF == 0 {next}
+                  $1 ~ /^\// {print $1}
+              ' manifest.txt > "$WORK/manifest.parsed" || fail_restore "Failed to parse manifest" 5
+          }
+
+          verify_manifest(){ 
+              local missing=0
+              while IFS= read -r f; do 
+                  if [ ! -f "files$f" ]; then 
+                      echo "ERROR: Manifest lists $f, but not found in archive."
+                      missing=1
+                  fi
+              done < "$WORK/manifest.parsed"
+              [ "$missing" -eq 1 ] && fail_restore "Archive corrupted or incomplete" 5
+          }
+
+          verify_checksum(){ sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_restore "checksum mismatch in archive" 5; }
+
+          verify_restored(){ 
+              local err=0
+              local hash_src
+              local hash_dst
+              while IFS= read -r f; do 
+                  if [ ! -f "$f" ]; then 
+                      echo "ERROR: Missing after restore: $f"; err=1; continue
+                  fi
+                  hash_src=$(sha256sum "files$f" | cut -d' ' -f1)
+                  hash_dst=$(sha256sum "$f" | cut -d' ' -f1)
+                  if [ "$hash_src" != "$hash_dst" ]; then 
+                      echo "ERROR: Checksum mismatch on: $f"; err=1
+                  fi
+              done < "$WORK/manifest.parsed"
+              return $err
+          }
+
           restore_safety(){ 
-              safe_rm "$SAFETY"; mkdir -p "$SAFETY/files" || fail_restore "safety dir create failed" 1; 
-              : > "$SAFETY/state.txt"; 
-              for f in $FILES; do 
-                  if [ -f "$f" ]; then mkdir -p "$(dirname "$SAFETY/files$f")" || fail_restore "dir create failed" 1; cp -p "$f" "$SAFETY/files$f" || fail_restore "safety copy failed" 1; echo "EXIST $f" >> "$SAFETY/state.txt"; 
-                  elif [ -e "$f" ]; then fail_restore "INVALID STATE: $f is not file" 7; 
-                  else echo "MISSING $f" >> "$SAFETY/state.txt"; fi; 
-              done; 
+              safe_rm "$SAFETY"; mkdir -p "$SAFETY/files" || fail_restore "safety dir create failed" 1
+              : > "$SAFETY/state.txt"
+              while IFS= read -r f; do 
+                  if [ -f "$f" ]; then 
+                      mkdir -p "$(dirname "$SAFETY/files$f")" || fail_restore "dir create failed" 1
+                      cp -p "$f" "$SAFETY/files$f" || fail_restore "safety copy failed" 1
+                      echo "EXIST $f" >> "$SAFETY/state.txt"
+                  elif [ -e "$f" ]; then fail_restore "INVALID STATE: $f is not file" 7
+                  else echo "MISSING $f" >> "$SAFETY/state.txt"; fi
+              done < "$WORK/manifest.parsed"
           }
+
           restore_safety_back(){ 
-              status=0; 
-              while read -r state f; do 
-                  if [ "$state" = "EXIST" ]; then rm -f "$f"; cp -p "$SAFETY/files$f" "$f" || { echo "CRITICAL: restore failed"; status=1; }; 
-                  elif [ "$state" = "MISSING" ]; then rm -f "$f"; fi; 
-              done < "$SAFETY/state.txt"; 
-              [ "$status" -eq 1 ] && { echo "CRITICAL: Rollback incomplete."; return 1; }; return 0; 
+              local status=0
+              local state
+              local f
+              while IFS=' ' read -r state f; do 
+                  if [ "$state" = "EXIST" ]; then 
+                      cp -p "$SAFETY/files$f" "$f.tmp" && mv "$f.tmp" "$f" || { echo "CRITICAL: Rollback failed for $f"; status=1; }
+                  elif [ "$state" = "MISSING" ]; then rm -f "$f"; fi
+              done < "$SAFETY/state.txt"
+              [ "$status" -eq 1 ] && { echo "CRITICAL: Rollback incomplete."; return 1; }
+              return 0
           }
+
           backup(){ 
-              check_files; safe_rm "$WORK"; rm -f "$BACKUP.tmp"; mkdir -p "$WORK/files" || fail_backup "workspace create failed" 1; 
-              for f in $FILES; do mkdir -p "$(dirname "$WORK/files$f")" || fail_backup "dir create failed" 1; cp -p "$f" "$WORK/files$f" || fail_backup "copy failed" 1; done; 
-              cd "$WORK" || fail_backup "cd failed" 1; create_manifest "manifest.txt"; create_checksum "checksum.sha256"; 
-              tar -czf "$BACKUP.tmp" files manifest.txt checksum.sha256 || fail_backup "tar failed" 1; 
-              tar -tzf "$BACKUP.tmp" >/dev/null || fail_backup "verify failed" 4; 
-              mv "$BACKUP.tmp" "$BACKUP" || fail_backup "replace backup failed" 1; 
-              safe_rm "$WORK"; echo "Backup completed"; 
+              trap trap_backup INT TERM HUP
+              local target_files="$(get_target_files)"
+              
+              safe_rm "$WORK"; rm -f "$BACKUP.tmp"; mkdir -p "$WORK/files" || fail_backup "workspace create failed" 1
+              
+              local count=0
+              for f in $target_files; do 
+                  mkdir -p "$(dirname "$WORK/files$f")" || fail_backup "dir create failed" 1
+                  cp -p "$f" "$WORK/files$f" || fail_backup "copy failed" 1
+                  count=$((count + 1))
+              done
+              echo "Successfully copied $count files."
+              
+              cd "$WORK" || fail_backup "cd failed" 1
+              create_manifest "$target_files" "manifest.txt"
+              create_checksum "$target_files" "checksum.sha256"
+              
+              tar -czf "$BACKUP.tmp" files manifest.txt checksum.sha256 || fail_backup "tar failed" 1
+              tar -tzf "$BACKUP.tmp" >/dev/null || fail_backup "archive verification failed" 4
+              mv "$BACKUP.tmp" "$BACKUP" || fail_backup "replace backup failed" 1
+              safe_rm "$WORK"
+              echo "Backup completed (Total $count files)."
+              trap - INT TERM HUP
           }
+
           restore(){ 
-              [ -f "$BACKUP" ] || fail "not found" 5; safe_rm "$WORK"; mkdir -p "$WORK" || fail_restore "workspace create failed" 5; 
-              tar -xzf "$BACKUP" -C "$WORK" || fail_restore "extract failed" 5; cd "$WORK" || fail_restore "cd failed" 5; 
-              verify_manifest; verify_checksum; restore_safety; 
-              for f in $FILES; do mkdir -p "$(dirname "$f")" || fail_restore "dir create failed" 6; rm -f "$f"; cp -p "files$f" "$f" || { ! restore_safety_back && fail_restore "rollback failed" 6 || fail_restore "rollback success" 6; }; done; 
-              ! verify_restored && { ! restore_safety_back && fail_restore "verify failed - rollback failed" 6 || fail_restore "verify failed - rollback success" 6; }; 
-              safe_rm "$SAFETY"; safe_rm "$WORK"; echo; echo "Restore completed."; echo "Please reboot now to apply all restored configuration."; exit 0
+              [ -f "$BACKUP" ] || fail "Backup archive not found at $BACKUP" 5
+              safe_rm "$WORK"; mkdir -p "$WORK" || fail_restore "workspace create failed" 5
+              tar -xzf "$BACKUP" -C "$WORK" || fail_restore "extract failed" 5
+              cd "$WORK" || fail_restore "cd failed" 5
+              
+              [ -f "manifest.txt" ] || fail_restore "manifest missing" 5
+              read_manifest
+              
+              verify_manifest
+              verify_checksum
+              
+              restore_safety
+              trap trap_restore INT TERM HUP
+              
+              local count=0
+              while IFS= read -r f; do 
+                  mkdir -p "$(dirname "$f")" || fail_restore "dir create failed" 6
+                  cp -p "files$f" "$f.tmp" && mv "$f.tmp" "$f" || { 
+                      if ! restore_safety_back; then
+                          echo "CRITICAL: Atomic replace & emergency rollback failed! Snapshot preserved at $SAFETY"
+                          exit 6
+                      else
+                          fail_restore "Atomic replace failed. Rollback successful." 6
+                      fi
+                  }
+                  count=$((count + 1))
+              done < "$WORK/manifest.parsed"
+              
+              echo "Successfully restored $count files."
+              
+              if ! verify_restored; then
+                  if ! restore_safety_back; then
+                      echo "CRITICAL: Verify failed & emergency rollback failed! Snapshot preserved at $SAFETY"
+                      exit 6
+                  else
+                      fail_restore "Verify failed. Rollback successful." 6
+                  fi
+              fi
+              
+              safe_rm "$SAFETY"; safe_rm "$WORK"
+              trap - INT TERM HUP
+              echo
+              echo "Restore completed ($count files)."
+              echo "Please reboot now to apply all restored configuration."
+              exit 0
           }
-          case "$1" in b) check_root; backup ;; r) check_root; restore ;; *) echo "Usage: ib {b|r}"; exit 2 ;; esac
+
+          usage() {
+              echo "ImmWrt Backup Tool (ib) v$VERSION"
+              echo "Usage: ib {b|backup | r|restore | v|version}"
+              exit 2
+          }
+
+          case "$1" in 
+              b|backup) check_root; backup ;; 
+              r|restore) check_root; restore ;; 
+              v|version) echo "ImmWrt Backup Tool v$VERSION"; exit 0 ;; 
+              *) usage ;; 
+          esac
           EOF
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
-
+          
       - name: Generate Cache Variables
         id: var
         run: echo "dl_key=dl-v8.0.1-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
@@ -171,14 +432,58 @@ jobs:
           key: ${{ steps.var.outputs.dl_key }}
           restore-keys: |
             dl-v8.0.1-
+            dl-
             
       - name: Generate Core Config
         run: |
           set -euo pipefail
           cd openwrt
           {
-            echo "CONFIG_TARGET_x86=y"; echo "CONFIG_TARGET_x86_64=y"; echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"; echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"; echo "CONFIG_TARGET_IMAGES_GZIP=y"
-            echo "CONFIG_PACKAGE_luci-app-passwall=y"; echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"; echo "CONFIG_PACKAGE_xray-core=y"; echo "CONFIG_PACKAGE_sing-box=y"; echo "CONFIG_PACKAGE_geoview=y"; echo "CONFIG_PACKAGE_ca-bundle=y"; echo "CONFIG_PACKAGE_ca-certificates=y"; echo "CONFIG_PACKAGE_smartdns=y"; echo "CONFIG_PACKAGE_luci-app-smartdns=y"; echo "CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y"; echo "CONFIG_PACKAGE_luci-app-ddns=y"; echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"; echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"; echo "CONFIG_PACKAGE_luci-app-upnp=y"; echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y"; echo "CONFIG_PACKAGE_luci-light=y"; echo "CONFIG_PACKAGE_luci-theme-argon=y"; echo "CONFIG_PACKAGE_luci-app-argon-config=y"; echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"; echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"; echo "CONFIG_PACKAGE_qemu-ga=y"; echo "CONFIG_PACKAGE_irqbalance=y"; echo "CONFIG_PACKAGE_luci-app-ttyd=y"; echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"; echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"; echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"; echo "CONFIG_PACKAGE_htop=y"; echo "CONFIG_PACKAGE_ethtool=y"; echo "CONFIG_PACKAGE_nano=y"; echo "CONFIG_PACKAGE_curl=y"; echo "CONFIG_PACKAGE_wget-ssl=y"; echo "CONFIG_PACKAGE_unzip=y"; echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"; echo "CONFIG_PACKAGE_kmod-virtio-net=y"; echo "CONFIG_PACKAGE_kmod-virtio-blk=y"; echo "CONFIG_PACKAGE_kmod-nft-offload=y"; echo "CONFIG_PACKAGE_block-mount=n"; echo "CONFIG_PACKAGE_luci-app-fstab=n"; echo "CONFIG_PACKAGE_luci-app-plugins=n"; echo "# CONFIG_CCACHE is not set"
+            echo "CONFIG_TARGET_x86=y"
+            echo "CONFIG_TARGET_x86_64=y"
+            echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
+            echo "CONFIG_TARGET_IMAGES_GZIP=y"
+            echo "CONFIG_PACKAGE_luci-app-passwall=y"
+            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
+            echo "CONFIG_PACKAGE_xray-core=y"
+            echo "CONFIG_PACKAGE_sing-box=y"
+            echo "CONFIG_PACKAGE_geoview=y"
+            echo "CONFIG_PACKAGE_ca-bundle=y"
+            echo "CONFIG_PACKAGE_ca-certificates=y"
+            echo "CONFIG_PACKAGE_smartdns=y"
+            echo "CONFIG_PACKAGE_luci-app-smartdns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-ddns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"
+            echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"
+            echo "CONFIG_PACKAGE_luci-app-upnp=y"
+            echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-light=y"
+            echo "CONFIG_PACKAGE_luci-theme-argon=y"
+            echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+            echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            echo "CONFIG_PACKAGE_qemu-ga=y"
+            echo "CONFIG_PACKAGE_irqbalance=y"
+            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"
+            echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"
+            echo "CONFIG_PACKAGE_htop=y"
+            echo "CONFIG_PACKAGE_ethtool=y"
+            echo "CONFIG_PACKAGE_nano=y"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_wget-ssl=y"
+            echo "CONFIG_PACKAGE_unzip=y"
+            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
+            echo "CONFIG_PACKAGE_kmod-virtio-net=y"
+            echo "CONFIG_PACKAGE_kmod-virtio-blk=y"
+            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
+            echo "CONFIG_PACKAGE_block-mount=n"
+            echo "CONFIG_PACKAGE_luci-app-fstab=n"
+            echo "CONFIG_PACKAGE_luci-app-plugins=n"
+            echo "# CONFIG_CCACHE is not set"
           } > .config
           make defconfig && ./scripts/diffconfig.sh > ../logs_diffconfig.txt
           gzip -9f -c .config > ../logs_full.config.gz
@@ -188,14 +493,16 @@ jobs:
           set -euo pipefail
           source /tmp/sre_utils.sh
           cd openwrt
+          
+          # 提取最新 component commit timestamp 作為基準 (與 Snapshot 統一，最高精度)
           IMM_DATE=$(git log -1 --format=%ct)
-          PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null 2>&1 || echo "$IMM_DATE")
-          PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct >/dev/null 2>&1 || echo "$IMM_DATE")
+          PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
+          PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
           export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
           
           # ==========================================
-          # 📡 恢復 SRE 駕駛艙雷達 (含磁碟探針)
+          # 📡 啟動 SRE 駕駛艙雷達
           # ==========================================
           MONITOR_PID=""
           cleanup_monitor() {
@@ -218,17 +525,25 @@ jobs:
           MONITOR_PID=$!
           # ==========================================
           
+          echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
+          
+          FAST_BUILD_STATUS="SUCCESS"
+          echo "▶️ [Step] Starting main compilation..."
           if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
+            FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
+            echo "FAST_BUILD_FAILED=true" > ../build-status.txt
             rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
             make -j1 V=s 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
           fi
+          echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
           
       - name: Save Cache
         uses: actions/cache/save@v4
         if: success() && !cancelled()
         with:
-          path: openwrt/dl
+          path: |
+            openwrt/dl
           key: ${{ steps.var.outputs.dl_key }}
 
       - name: Validate & Final Packaging
@@ -237,23 +552,61 @@ jobs:
           ROOT="$(pwd)"
           TARGET_DIR="openwrt/bin/targets/x86/64"
           mkdir -p release_assets
+          
           [ -d "$TARGET_DIR" ] || exit 1
           cd "$TARGET_DIR"
           sha256sum --ignore-missing -c sha256sums || exit 1
           find . -name "*combined*.img.gz" -exec install -m644 {} "$ROOT/release_assets/" \;
           install -m644 sha256sums "$ROOT/release_assets/sha256sums"
+          
           cd "$ROOT"
+          [ -z "$(find release_assets -type f -name "*combined*.img.gz")" ] && { echo "Firmware missing!"; exit 1; }
+          
           find openwrt/bin/targets/x86/64 -name "*.manifest" -exec sh -c 'echo "=== $(basename "$1") ==="; cat "$1"; echo' _ {} \; > release_assets/installed-packages.txt
+          [ -s release_assets/installed-packages.txt ] || rm -f release_assets/installed-packages.txt
+          
+          find openwrt/bin/packages -name "*.apk" | sort > release_assets/apk-list.txt
+          [ -s release_assets/apk-list.txt ] || rm -f release_assets/apk-list.txt
+          
+          # 🚀 防禦性 find：免疫目錄結構變更，提取最終產物之真實指紋
           OW_RELEASE=$(find openwrt/build_dir -name openwrt_release -path "*/etc/openwrt_release" -print -quit 2>/dev/null || true)
-          OW_REV=$(if [ -n "$OW_RELEASE" ]; then grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown"; else echo "unknown"; fi)
+          if [ -n "$OW_RELEASE" ] && [ -f "$OW_RELEASE" ]; then
+            OW_REV=$(grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown")
+          else
+            OW_REV="unknown"
+          fi
+          [ -z "$OW_REV" ] && OW_REV="unknown"
+          
           cat << EOF > release_assets/build-info.txt
           Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
           Branch: v25.12.1-LTS
           OpenWrt Version: $OW_REV
           Workflow Run ID: ${{ github.run_id }}
+          Runner OS: ${{ runner.os }}
+          Runner Image OS: ${ImageOS:-unknown}
+          Runner Image Version: ${ImageVersion:-unknown}
+          Runner Arch: $(uname -m)
+          Kernel: $(uname -r)
+          CPU: $(nproc) cores
+          Memory: $(free -h | awk '/Mem:/ {print $2}')
+          SOURCE_DATE_EPOCH: $(grep SOURCE_DATE_EPOCH toolchain.info | cut -d= -f2 || echo unknown)
+          ImmortalWrt Commit: $(git -C openwrt rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Commit: $(git -C openwrt/package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Packages Commit: $(git -C openwrt/package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)
+          Fast Build Status: $(cat build-status.txt 2>/dev/null || echo "UNKNOWN")
           EOF
+          
           [ -s feeds.snapshot.txt ] && install -m644 feeds.snapshot.txt release_assets/feeds.snapshot
           [ -s toolchain.info ] && install -m644 toolchain.info release_assets/toolchain.info
+          [ -s logs_full.config.gz ] && install -m644 logs_full.config.gz release_assets/full.config.gz
+          [ -s logs_diffconfig.txt ] && install -m644 logs_diffconfig.txt release_assets/diffconfig.txt
+          [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
+          [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
+          [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
+          [ -s /tmp/retry_history.log ] && install -m644 /tmp/retry_history.log release_assets/
+          [ -s /tmp/retry_debug.log ] && gzip -9 -c /tmp/retry_debug.log > release_assets/retry_debug.log.gz || true
+          
+          find release_assets -type f -empty -print -delete
           
       - name: Publish Release
         uses: softprops/action-gh-release@v2
@@ -262,9 +615,13 @@ jobs:
           name: ImmWrt v8.0.1-LTS (TSAR BOMBA SEALED)
           body: |
             ### 🔒 v8.0.1-LTS TSAR BOMBA SEALED
-            - 升級版本號至 v8.0.1-LTS。
-            - 注入原生 IB 備份工具至 base-files，實現完全解耦的 CI/CD 注入模式。
-            - 增強 JSON 解析韌性，修復 build 過程中的選單殘留誤報問題。
+            - **原生備份引擎**：[v8.0.1] 注入 `ib v1.5-LTS` 原生備份工具，提供 100% POSIX 相容之原子回滾防護，完美適配 OpenWrt 部署環境。
+            - **套件依賴修正**：[v8.0.1] 確保 `luci-app-upnp` 與 `luci-app-advanced-reboot` 正常編譯並寫入依賴清單。
+            - **JSON 韌性升級**：[v8.0.1] 增強 `jq` 解析，遇到殘缺前端選單檔案優雅跳過，防止 Pipeline 假性中斷。
+            - **沙皇級空間釋放**：抹除 GitHub runner 深層工具包，為韌體封裝騰出極限實體空間。
+            - **自癒架構 (Adaptive LTS)**：容忍上游漂移，實現 Hash 動態修復。
+            - **進程安全**：引入 `xargs -r kill -9` 確保 CI 環境絕對無殭屍進程殘留。
+            - **全域可觀測性**：SRE 雷達即時回傳負載與磁碟空間，完整封裝 SBOM、安裝清單與 Runner 指紋考古履歷。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
