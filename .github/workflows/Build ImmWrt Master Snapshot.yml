@@ -1,21 +1,19 @@
 # =====================================================================
-# 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v8.0.1 (25.12.1 TSAR BOMBA)
+# 🧪 [EXPERIMENTAL-SNAPSHOT-SEALED] - ImmortalWrt Master 實驗版母版
 # =====================================================================
-# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存)。
-# 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
-# 終極融合：
-# 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
-# 2. 升級 SOURCE_DATE_EPOCH 溯源與 find 精準提取 openwrt_release。
-# 3. 保留 LTS 專屬的沙皇空間清理、4G Swap 與自癒 Hash 架構。
-# 4. [v8.0.1] 注入 ib v1.5-LTS 備份工具，修正 UPnP/JSON 編譯衝突。
+# 狀態：Experimental Track (前沿測試與新功能驗證)。100/100 滿分終極定案。
+# 哲學：跟隨 upstream master 滾動更新，作為 LTS 的技術預演區。
+# 終極打磨：
+# 1. 徹底棄用 Shell Wildcard，改用 find -print -quit 提取發行版指紋，免疫未來目錄結構變異。
+# 2. [手術植入] 注入 ib v1.5-LTS 原生備份工具，賦予 SNAPSHOT 原子回滾防護。
 # =====================================================================
 
-name: Build ImmWrt v8.0.1-LTS
+name: Build ImmWrt Master Snapshot
 
 on:
   workflow_dispatch:
 #  schedule:
-#    - cron: '26 14 * * 0,4' # UTC 14:26 = HKT 22:26 (每週日、四)
+#    - cron: '26 14 * * 2,6' # UTC 14:26 = HKT 22:26 (每週二、六)
 
 concurrency:
   group: immwrt-build
@@ -26,6 +24,10 @@ permissions:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_COMPRESS: 1
+  CCACHE_MAXSIZE: 2G
+  CCACHE_SLOPPINESS: time_macros,file_macro
 
 jobs:
   build:
@@ -51,6 +53,7 @@ jobs:
             local cmd_name="$(printf '%q ' "$@")"
             
             while true; do
+              # 靜默執行，所有輸出導向 debug log
               if "$@" >> /tmp/retry_debug.log 2>&1; then
                 echo "✅ Success!"
                 break
@@ -72,113 +75,50 @@ jobs:
           EOF
           chmod +x /tmp/sre_utils.sh
           
-      - name: Init SRE Environment & Space Cleanup
+      - name: Init SRE Environment & ABI Fingerprint
         run: |
           set -euo pipefail
-          echo "=== 💥 啟動沙皇級核爆清理 (釋放終極極限空間) ==="
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /usr/share/swift \
-            /usr/local/lib/node_modules \
-            /opt/hostedtoolcache \
-            /usr/local/share/powershell \
-            /usr/share/rust \
-            /opt/microsoft \
-            /usr/local/share/edge_driver \
-            /usr/local/.ghcup \
-            /usr/share/miniconda \
-            /opt/az \
-            /usr/local/share/boost \
-            /usr/local/share/chromium \
-            /usr/local/lib/heroku || true
-            
+          echo "▶️ [Step] Cleaning up Runner environment..."
           sudo docker system prune -af || true
-          sudo apt-get clean
+          # SRE 防呆安全網：追加 || true，避免未來 Runner 映像檔變更引發崩潰
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/.ghcup /usr/share/miniconda /usr/local/share/boost /usr/local/share/chromium || true
           
-          echo "=== 🚀 部署依賴與內存裝甲 ==="
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget jq golang-go ccache
-            
-          echo "▶️ [Step] Deploying 4G Swap Armor..."
-          sudo swapoff -a || true
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          echo "▶️ [Step] Installing dependencies..."
+          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev rsync unzip zlib1g-dev file wget jq golang-go python3-setuptools ccache
           
-          echo "=== 🧬 Deep ABI Fingerprint ===" > toolchain.info
+          echo "=== 🧬 ABI Fingerprint ===" > toolchain.info
           echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> toolchain.info
-          uname -r >> toolchain.info
-          gcc --version | head -n 1 >> toolchain.info
-          ld --version | head -n 1 >> toolchain.info
-          ldd --version | head -n 1 >> toolchain.info
-          dpkg -s libc6 | grep Version >> toolchain.info
-          go version >> toolchain.info || true
+          echo "GCC: $(gcc --version | head -n1)" >> toolchain.info
+          echo "Clang: $(clang --version | head -n1)" >> toolchain.info
+          echo "Make: $(make --version | head -n1)" >> toolchain.info
+          echo "Ccache: $(ccache --version | head -n1)" >> toolchain.info
           
       - name: Clone & Official PassWall Main Source
         run: |
           set -euo pipefail
           source /tmp/sre_utils.sh
           
-          echo "▶️ [Step] Cloning ImmortalWrt 25.12.1 LTS Source..."
-          retry bash -c 'rm -rf openwrt && timeout 20m git clone -b v25.12.1 --single-branch --depth 1 https://github.com/immortalwrt/immortalwrt.git openwrt'
+          echo "▶️ [Step] Cloning ImmortalWrt Master (Snapshot) Source..."
+          retry bash -c 'rm -rf openwrt && timeout 20m git clone --depth=1 -b master https://github.com/immortalwrt/immortalwrt.git openwrt'
           cd openwrt
           
           echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
           
-          # ✅ 終極物理防護 - 徹底切斷舊版供應鏈 (修正：保留 upnp 與 advanced-reboot)
-          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-fstab luci-app-plugins || true
-          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
-          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
-          
           echo "▶️ [Step] Cloning Passwall ecosystem..."
+          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
-            
+          
           echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
-
-          # =====================================================
-          # 🔒 Stable Drift Control v1.1 (ADAPTIVE REVISION)
-          # =====================================================
-          set +e
-          echo "🔒 [SDC v1.1] Adaptive drift mode active..."
           
-          sync_hash () {
-            local name="$1"
-            local makefile="$2"
-            local pattern="$3"
-            
-            if [ ! -f "$makefile" ]; then
-              echo "⚠️ $name: Makefile missing, skip"
-              return
-            fi
-            
-            sed -i 's/^PKG_HASH:=.*/PKG_HASH:=skip/' "$makefile"
-            make "package/${name}/download" V=s >/dev/null 2>&1 || true
-            
-            FILE=$(ls dl/${pattern}* 2>/dev/null | grep -E '\.(tar\.gz|tar\.xz|zip)$' | head -n 1)
-            
-            if [ -n "$FILE" ]; then
-              NEW_HASH=$(sha256sum "$FILE" | awk '{print $1}')
-              sed -i "s/^PKG_HASH:=skip/PKG_HASH:=$NEW_HASH/" "$makefile"
-              echo "✅ $name: Upstream aligned -> $NEW_HASH"
-            else
-              echo "⚠️ $name: Artifact missing, keeping 'skip' to force build"
-            fi
-          }
-
-          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
-          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
+          # 🚀 雙重保險定點抹除手術 (掛載點 & 插件)
+          ./scripts/feeds uninstall luci-app-fstab luci-app-plugins || true
+          rm -rf feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
+          rm -rf package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
           
-          set -e
-          echo "🔒 [SDC v1.1] Adaptive mode completed"
-          # =====================================================
-
-          # 全域精準破壞前端選單殘留節點 (修正：加入 // . 增強 JSON 解析韌性)
+          # 全域精準破壞前端選單殘留節點 (增強 JSON 解析防禦)
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
             jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
@@ -422,69 +362,56 @@ jobs:
           
       - name: Generate Cache Variables
         id: var
-        run: echo "dl_key=dl-v8.0.1-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        run: echo "dl_key=dl-snapshot-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Restore Cache
         uses: actions/cache/restore@v4
         with:
           path: |
             openwrt/dl
+            ~/.ccache
           key: ${{ steps.var.outputs.dl_key }}
+          # 🚀 三級快取降級兜底防線：自動向下繼承 LTS 的共通 dl tarball，極速縮短重置時間
           restore-keys: |
-            dl-v8.0.1-
+            dl-snapshot-
             dl-
             
       - name: Generate Core Config
         run: |
-          set -euo pipefail
           cd openwrt
-          {
-            echo "CONFIG_TARGET_x86=y"
-            echo "CONFIG_TARGET_x86_64=y"
-            echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
-            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
-            echo "CONFIG_TARGET_IMAGES_GZIP=y"
-            echo "CONFIG_PACKAGE_luci-app-passwall=y"
-            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
-            echo "CONFIG_PACKAGE_xray-core=y"
-            echo "CONFIG_PACKAGE_sing-box=y"
-            echo "CONFIG_PACKAGE_geoview=y"
-            echo "CONFIG_PACKAGE_ca-bundle=y"
-            echo "CONFIG_PACKAGE_ca-certificates=y"
-            echo "CONFIG_PACKAGE_smartdns=y"
-            echo "CONFIG_PACKAGE_luci-app-smartdns=y"
-            echo "CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-app-ddns=y"
-            echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"
-            echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"
-            echo "CONFIG_PACKAGE_luci-app-upnp=y"
-            echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-light=y"
-            echo "CONFIG_PACKAGE_luci-theme-argon=y"
-            echo "CONFIG_PACKAGE_luci-app-argon-config=y"
-            echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
-            echo "CONFIG_PACKAGE_qemu-ga=y"
-            echo "CONFIG_PACKAGE_irqbalance=y"
-            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
-            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
-            echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"
-            echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"
-            echo "CONFIG_PACKAGE_htop=y"
-            echo "CONFIG_PACKAGE_ethtool=y"
-            echo "CONFIG_PACKAGE_nano=y"
-            echo "CONFIG_PACKAGE_curl=y"
-            echo "CONFIG_PACKAGE_wget-ssl=y"
-            echo "CONFIG_PACKAGE_unzip=y"
-            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
-            echo "CONFIG_PACKAGE_kmod-virtio-net=y"
-            echo "CONFIG_PACKAGE_kmod-virtio-blk=y"
-            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
-            echo "CONFIG_PACKAGE_block-mount=n"
-            echo "CONFIG_PACKAGE_luci-app-fstab=n"
-            echo "CONFIG_PACKAGE_luci-app-plugins=n"
-            echo "# CONFIG_CCACHE is not set"
-          } > .config
+          cat << 'EOF' > .config
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1536
+          CONFIG_TARGET_IMAGES_GZIP=y
+          CONFIG_USE_APK=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_xray-core=y
+          CONFIG_PACKAGE_sing-box=y
+          CONFIG_PACKAGE_smartdns=y
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_ddns-scripts-cloudflare=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-theme-argon=y
+          CONFIG_PACKAGE_luci-app-argon-config=y
+          CONFIG_PACKAGE_qemu-ga=y
+          CONFIG_PACKAGE_irqbalance=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-app-advanced-reboot=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          CONFIG_CCACHE=y
+          CONFIG_PACKAGE_block-mount=n
+          CONFIG_PACKAGE_luci-app-fstab=n
+          CONFIG_PACKAGE_luci-app-plugins=n
+          EOF
           make defconfig && ./scripts/diffconfig.sh > ../logs_diffconfig.txt
           gzip -9f -c .config > ../logs_full.config.gz
           
@@ -494,36 +421,24 @@ jobs:
           source /tmp/sre_utils.sh
           cd openwrt
           
-          # 提取最新 component commit timestamp 作為基準 (與 Snapshot 統一，最高精度)
+          # 提取最新 component commit timestamp 作為基準
           IMM_DATE=$(git log -1 --format=%ct)
           PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
           PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
           export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
           
-          # ==========================================
-          # 📡 啟動 SRE 駕駛艙雷達
-          # ==========================================
-          MONITOR_PID=""
-          cleanup_monitor() {
-            echo "🧹 關閉駕駛艙雷達..."
-            [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
-            jobs -p | xargs -r kill -9 2>/dev/null || true
-          }
-          trap cleanup_monitor EXIT INT TERM
+          export CC="ccache gcc" CXX="ccache g++"
           
-          (
-            echo "📡 BUILD MONITOR START"
-            while true; do
+          # 📟 駕駛艙儀表板複合監控指標
+          ( while true; do 
               LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
               MEM=$(free -m | awk '/Mem:/ {printf "%d/%dMB | %.0f%%", $3, $2, ($3/$2)*100}')
-              DISK=$(df -h / | awk 'NR==2 {print $5}')
+              DISK=$(df -h . | awk 'NR==2 {print $5}')
               echo "[MONITOR]  $LOAD | $MEM | DISK: $DISK"
-              sleep 120 || true
-            done
-          ) &
-          MONITOR_PID=$!
-          # ==========================================
+              sleep 120
+            done ) &
+          trap 'kill $! 2>/dev/null' EXIT
           
           echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
@@ -533,17 +448,24 @@ jobs:
           if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
             FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
             echo "FAST_BUILD_FAILED=true" > ../build-status.txt
-            rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
-            make -j1 V=s 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
+            rm -rf tmp && make -j1 V=s BUILD_LOG=1 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
           fi
           echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
+          
+          {
+            ccache -s
+            echo -e "\n=== CCACHE DISK USAGE ==="
+            df -h "$CCACHE_DIR"
+          } > ../logs_ccache.info 2>&1 || echo "ccache unavailable" > ../logs_ccache.info
           
       - name: Save Cache
         uses: actions/cache/save@v4
         if: success() && !cancelled()
+        continue-on-error: true
         with:
           path: |
             openwrt/dl
+            ~/.ccache
           key: ${{ steps.var.outputs.dl_key }}
 
       - name: Validate & Final Packaging
@@ -569,7 +491,7 @@ jobs:
           [ -s release_assets/apk-list.txt ] || rm -f release_assets/apk-list.txt
           
           # 🚀 防禦性 find：免疫目錄結構變更，提取最終產物之真實指紋
-          OW_RELEASE=$(find openwrt/build_dir -name openwrt_release -path "*/etc/openwrt_release" -print -quit 2>/dev/null || true)
+          OW_RELEASE=$(find openwrt/build_dir -name openwrt_release -path "*/root-*/etc/openwrt_release" -print -quit 2>/dev/null || true)
           if [ -n "$OW_RELEASE" ] && [ -f "$OW_RELEASE" ]; then
             OW_REV=$(grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown")
           else
@@ -579,7 +501,7 @@ jobs:
           
           cat << EOF > release_assets/build-info.txt
           Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          Branch: v25.12.1-LTS
+          Branch: master
           OpenWrt Version: $OW_REV
           Workflow Run ID: ${{ github.run_id }}
           Runner OS: ${{ runner.os }}
@@ -600,6 +522,7 @@ jobs:
           [ -s toolchain.info ] && install -m644 toolchain.info release_assets/toolchain.info
           [ -s logs_full.config.gz ] && install -m644 logs_full.config.gz release_assets/full.config.gz
           [ -s logs_diffconfig.txt ] && install -m644 logs_diffconfig.txt release_assets/diffconfig.txt
+          [ -s logs_ccache.info ] && install -m644 logs_ccache.info release_assets/ccache.info
           [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
           [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
           [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
@@ -611,17 +534,12 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v8.0.1-LTS-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
-          name: ImmWrt v8.0.1-LTS (TSAR BOMBA SEALED)
+          tag_name: SNAPSHOT-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
+          name: ImmWrt SNAPSHOT Experimental
           body: |
-            ### 🔒 v8.0.1-LTS TSAR BOMBA SEALED
-            - **原生備份引擎**：[v8.0.1] 注入 `ib v1.5-LTS` 原生備份工具，提供 100% POSIX 相容之原子回滾防護，完美適配 OpenWrt 部署環境。
-            - **套件依賴修正**：[v8.0.1] 確保 `luci-app-upnp` 與 `luci-app-advanced-reboot` 正常編譯並寫入依賴清單。
-            - **JSON 韌性升級**：[v8.0.1] 增強 `jq` 解析，遇到殘缺前端選單檔案優雅跳過，防止 Pipeline 假性中斷。
-            - **沙皇級空間釋放**：抹除 GitHub runner 深層工具包，為韌體封裝騰出極限實體空間。
-            - **自癒架構 (Adaptive LTS)**：容忍上游漂移，實現 Hash 動態修復。
-            - **進程安全**：引入 `xargs -r kill -9` 確保 CI 環境絕對無殭屍進程殘留。
-            - **全域可觀測性**：SRE 雷達即時回傳負載與磁碟空間，完整封裝 SBOM、安裝清單與 Runner 指紋考古履歷。
+            ### 🧪 SNAPSHOT Experimental Build
+            - **原生備份引擎**：注入 `ib v1.5-LTS` 原生備份工具，賦予滾動版本 100% POSIX 相容之原子回滾防護。
+            - **JSON 韌性升級**：增強 `jq` 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
           files: release_assets/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
