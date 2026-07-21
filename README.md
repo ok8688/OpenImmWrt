@@ -4,3 +4,4 @@
 - target: x86_64
 - passwall included
 - ImmWrt Backup Specification
+- ImmWrt Master Snapshot
