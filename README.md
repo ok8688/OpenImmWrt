@@ -3,3 +3,4 @@
 - schedule: 22:26 HKT
 - target: x86_64
 - passwall included
+- ImmWrt Backup Specification
