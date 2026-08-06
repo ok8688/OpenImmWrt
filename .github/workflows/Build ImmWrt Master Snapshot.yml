@@ -5,7 +5,7 @@
 # 哲學：跟隨 upstream master 滾動更新，作為 LTS 的技術預演區。
 # 終極打磨：
 # 1. 徹底棄用 Shell Wildcard，改用 find -print -quit 提取發行版指紋，免疫未來目錄結構變異。
-# 2. [手術植入] 注入 ib v1.5-LTS 原生備份工具，賦予 SNAPSHOT 原子回滾防護。
+# 2. [手術植入] 升級 ib v1.7 原生備份工具，加入 Argon dark.css 無損保留，賦予 SNAPSHOT 原子回滾防護。
 # =====================================================================
 
 name: Build ImmWrt Master Snapshot
@@ -13,7 +13,7 @@ name: Build ImmWrt Master Snapshot
 on:
   workflow_dispatch:
 #  schedule:
-#    - cron: '26 14 * * 2,6' # UTC 14:26 = HKT 22:26 (每週二、六)
+#    - cron: '26 14 * * 0,2,4,6' # UTC 14:26 = HKT 22:26 (每週日、二、四、六)
 
 concurrency:
   group: immwrt-build
@@ -31,7 +31,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     steps:
@@ -138,13 +138,13 @@ jobs:
             done | sort
           } > ../feeds.snapshot.txt
 
-      - name: Inject ImmWrt Backup Tool (ib v1.5-LTS)
+      - name: Inject ImmWrt Backup Tool (ib v1.7)
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
           cat << 'EOF' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
-          VERSION="1.5-LTS"; readonly VERSION
+          VERSION="1.7"; readonly VERSION
           BACKUP_DIR="/root"; readonly BACKUP_DIR
           BACKUP="$BACKUP_DIR/immwrt-backup-latest.tar.gz"; readonly BACKUP
           WORK="/tmp/ib-work"; readonly WORK
@@ -152,7 +152,7 @@ jobs:
 
           REQUIRED_FILES="/etc/config/ddns /etc/config/dhcp /etc/config/firewall /etc/config/luci /etc/config/network /etc/config/passwall /etc/config/passwall_server /etc/config/smartdns /etc/config/system /etc/config/upnpd /etc/crontabs/root"
           readonly REQUIRED_FILES
-          OPTIONAL_FILES="/etc/config/argon /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip"
+          OPTIONAL_FILES="/etc/config/argon /usr/share/passwall/rules/direct_host /usr/share/passwall/rules/direct_ip /usr/share/passwall/rules/proxy_host /usr/share/passwall/rules/proxy_ip /www/luci-static/argon/css/dark.css"
           readonly OPTIONAL_FILES
 
           fail(){ echo "FAILED: $1"; exit "$2"; }
@@ -213,6 +213,8 @@ jobs:
                   NF == 0 {next}
                   $1 ~ /^\// {print $1}
               ' manifest.txt > "$WORK/manifest.parsed" || fail_restore "Failed to parse manifest" 5
+              
+              [ -s "$WORK/manifest.parsed" ] || fail_restore "Manifest contains no valid entries" 5
           }
 
           verify_manifest(){ 
@@ -538,7 +540,7 @@ jobs:
           name: ImmWrt SNAPSHOT Experimental
           body: |
             ### 🧪 SNAPSHOT Experimental Build
-            - **原生備份引擎**：注入 `ib v1.5-LTS` 原生備份工具，賦予滾動版本 100% POSIX 相容之原子回滾防護。
+            - **原生備份引擎**：注入 `ib v1.7` 原生備份工具，加入 Argon `dark.css` 無損保留，賦予滾動版本 100% POSIX 相容之原子回滾防護。
             - **JSON 韌性升級**：增強 `jq` 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
           files: release_assets/*
         env:
