@@ -202,7 +202,7 @@ jobs:
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
-          cat << 'EOF' > openwrt/package/base-files/files/usr/bin/ib
+          cat << 'IB_SCRIPT' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
 
           VERSION="1.8"
@@ -476,9 +476,9 @@ jobs:
                           ;;
                   esac
 
-              done <<EOF
+              done <<ARCHIVE_LISTING
           $listing
-          EOF
+          ARCHIVE_LISTING
           }
 
 
@@ -514,9 +514,9 @@ jobs:
 
                   esac
 
-              done <<EOF
+              done <<ARCHIVE_LISTING
           $listing
-          EOF
+          ARCHIVE_LISTING
           }
 
 
@@ -1582,7 +1582,7 @@ jobs:
                   ;;
 
           esac
-          EOF
+          IB_SCRIPT
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
           
       - name: Generate Cache Variables
@@ -1635,7 +1635,6 @@ jobs:
             echo "CONFIG_PACKAGE_irqbalance=y"
             echo "CONFIG_PACKAGE_kmod-wireguard=y"
             echo "CONFIG_PACKAGE_wireguard-tools=y"
-            echo "CONFIG_PACKAGE_luci-proto-wireguard=y"
             echo "CONFIG_PACKAGE_luci-proto-wireguard=y"
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
             echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
