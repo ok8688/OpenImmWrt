@@ -7,7 +7,7 @@
 # 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
 # 2. 升級 SOURCE_DATE_EPOCH 溯源與 find 精準提取 openwrt_release。
 # 3. 保留 LTS 專屬的沙皇空間清理、4G Swap 與自癒 Hash 架構。
-# 4. [v8.0.3] 升級 ib v1.8 備份引擎，修復 tar 目錄項誤判，整合 wg-quick 支援與空格容忍抗漂移 SDC v1.3。
+# 4. [v8.0.3] 升級 ib v1.8 備份引擎，修復 tar 目錄項誤判，整合 wg-quick 支援、qrencode 與空格容忍抗漂移 SDC v1.3。
 # =====================================================================
 
 name: Build ImmWrt v8.0.3-LTS
@@ -1470,6 +1470,7 @@ jobs:
             echo "CONFIG_PACKAGE_wireguard-tools=y"
             echo "CONFIG_PACKAGE_wg-quick=y"
             echo "CONFIG_PACKAGE_luci-proto-wireguard=y"
+            echo "CONFIG_PACKAGE_qrencode=y"
             echo "CONFIG_PACKAGE_kmod-crypto-kpp=y"
             echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y"
             echo "CONFIG_PACKAGE_luci-app-ttyd=y"
@@ -1615,8 +1616,8 @@ jobs:
           body: |
             ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages` 最新 commit。
-            - **備份引擎升級**：[v8.0.3] 原生備份工具 `ib` 推進至 `v1.8` 黃金基準垂直排版版，解耦套件強依賴，確保跨版本配置恢復安全，並修正 `tar` 目錄項過濾邏輯。
-            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、密碼學底層模組及 `wg-quick` 工具鏈。
+            - **備份引擎升級**：[v8.0.3] 原生備份工具 `ib` 推進至 `v1.8` 黃金基準垂直排版版，解耦套件強依賴，確保跨版本配置恢復安全，並修復 `tar` 目錄項過濾邏輯。
+            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、密碼學底層模組、`wg-quick` 工具鏈及 `qrencode` (QR Code 支援)。
             - **自癒架構 (SDC v1.3)**：升級空白字元萬用匹配正則，全面防禦 upstream Makefile 格式漂移。
             - **進程安全與可觀測性**：精準收斂 SRE 雷達行程回收，完整封裝 SBOM、安裝清單與 Runner 指紋考古履歷。
           files: release_assets/*
