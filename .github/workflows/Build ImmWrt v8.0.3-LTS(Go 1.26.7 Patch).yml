@@ -1,7 +1,7 @@
 # =====================================================================
 # 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v8.0.3 (25.12.1 TSAR BOMBA)
 # =====================================================================
-# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存 + Diagnostic Probe 5)。
+# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存 + Go 1.26.7 Pinning)。
 # 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
 # 終極融合：
 # 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
@@ -10,7 +10,8 @@
 # 4. [v8.0.3] 升級 ib v1.8 備份引擎，修復 tar 目錄項誤判，整合 wg-quick 支援、qrencode。
 # 5. [SDC v1.4 Final] 導入 OpenWrt Native dumpinfo 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；導入可觀測性日誌。
 # 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
-# 7. [Diagnostic Probe 5] 測試 Go 官方 JSON API，精準提取 1.26.7 Source Hash。
+# 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
+# 8. [Go 1.26.7 Workaround] 暫時將 Go toolchain pin 至 1.26.7 以修復 sing-box 1.13.19 與 go-json-experiment/json 的 API 相容性。
 # =====================================================================
 
 name: Build ImmWrt v8.0.3-LTS
@@ -146,27 +147,15 @@ jobs:
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
-          # 🔬 DIAGNOSTIC PROBE 5: Dynamic Go Hash Retrieval Test
+          # 🔒 TEMP: Pin Go 1.26.7 (Workaround for sing-box / json API)
           # =====================================================
-          echo "=== 🔬 Golang Feed Audit 5 (Hash Retrieval) ==="
-          TARGET_VERSION="1.26.7"
-          echo "▶️ Fetching official SHA256 for go${TARGET_VERSION}.src.tar.gz from go.dev..."
-          
-          # 加上 &include=all 確保即使 1.26.7 不是最新也能抓到
-          GO_HASH=$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" | jq -r ".[] | select(.version==\"go${TARGET_VERSION}\") | .files[] | select(.filename==\"go${TARGET_VERSION}.src.tar.gz\") | .sha256")
-          
-          echo "▶️ Resulting Hash : $GO_HASH"
-          echo "▶️ Hash Length    : ${#GO_HASH} characters"
-          
-          if [ "${#GO_HASH}" -eq 64 ]; then
-            echo "✅ Validation passed! The hash is a valid 64-character string."
-          else
-            echo "❌ Validation failed! The hash is invalid or missing."
-          fi
-          
-          echo "=========================================="
-          echo "🛑 Diagnostic probe 5 complete."
-          exit 1
+          echo "=== 🔒 Pinning Go toolchain to 1.26.7 ==="
+          GO_MK="feeds/packages/lang/golang/golang1.26/Makefile"
+          GO_HASH="0ed24eac755105085b89fe9cabc2742b91a0ad7b94b59d3ad364918ebc8956ad"
+          sed -i 's/^GO_VERSION_PATCH:=4$/GO_VERSION_PATCH:=7/' "$GO_MK"
+          sed -i "s/^PKG_HASH:=.*/PKG_HASH:=${GO_HASH}/" "$GO_MK"
+          echo "=== Verify Go version configuration ==="
+          grep -E 'GO_VERSION_MAJOR_MINOR|GO_VERSION_PATCH|PKG_HASH' "$GO_MK"
           # =====================================================
 
           # =====================================================
@@ -275,7 +264,7 @@ jobs:
 
           # 全域精準破壞前端選單殘留節點 
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
-            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
+            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/services/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
           
           # 結構化 SBOM 生成
@@ -1348,7 +1337,7 @@ jobs:
                       5
 
               verify_archive_members "$BACKUP" || \
-                  fail \
+                  fail_restore_preflight \
           "Archive member security verification failed" \
                       5
 
@@ -1429,7 +1418,7 @@ jobs:
                       5
 
               verify_archive_members "$BACKUP" || \
-                  fail \
+                  fail_restore_preflight \
           "Archive member security verification failed" \
                       5
 
@@ -1686,7 +1675,7 @@ jobs:
           
           cat << EOF > release_assets/build-info.txt
           Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          Branch: v25.12.1-LTS (Diagnostic Probe Active)
+          Branch: v25.12.1-LTS (Go 1.26.7 Pinned)
           OpenWrt Version: $OW_REV
           Workflow Run ID: ${{ github.run_id }}
           Runner OS: ${{ runner.os }}
@@ -1718,12 +1707,19 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v8.0.3-LTS-diag5-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
-          name: ImmWrt v8.0.3-LTS (Diagnostic Probe 5)
+          tag_name: v8.0.3-LTS-go1267-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
+          name: ImmWrt v8.0.3-LTS (Go 1.26.7 Pinned)
           body: |
-            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (Diagnostic Probe 5 Run)
-            - **觀測探針啟動**：透過 Go 官方 JSON API 獲取 `go1.26.7.src.tar.gz` 真正的 `SHA256`。
-            - 預期將於 `Installing feeds...` 步驟印出診斷日誌並中斷構建（`exit 1`）。
+            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (Go 1.26.7 Workaround)
+            - **Go Toolchain Pinned**：將 `golang1.26/Makefile` 的 `GO_VERSION_PATCH` 提升至 `7`，並代入官方 `0ed24eac755105085b89fe9cabc2742b91a0ad7b94b59d3ad364918ebc8956ad` 雜湊，徹底解決 `sing-box 1.13.19` 依賴的 `go-json-experiment/json` API 相容性問題。
+            - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
+            - **雙重防線審計 (Final Audit)**：在 Defconfig 與最終固件 Manifest 階段全面導入強制檢查，杜絕 `block-mount`、`luci-app-fstab` 與 `luci-app-plugins` 任何形式的依賴回歸。
+            - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages` 最新 commit。
+            - **備份引擎升級**：內建 `ib v1.8` 黃金基準垂直排版版，解耦套件強依賴，確保跨版本配置恢復安全。
+            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、密碼學底層模組、`wg-quick` 工具鏈及 `qrencode` (QR Code 支援)。
+            - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE `(:=|\?=|=)` 賦值；導入 SDC 獨立下載狀態的可觀測性日誌 (`tail -n 80`)；保留 `PKG_MIRROR_HASH` 原始語義。
+            - **極致溯源與環境決定性**：將 `openwrt_release` 的提取範圍絕對限縮至 `target-x86_64_musl` 杜絕多目標殘留干擾；升級 4G Swap 建立流程 (`rm -f` 防護) 免疫 Runner Drift。
+            - **快取綱要嚴格隔離**：`sdc14` Namespace 搭配 `feeds.snapshot.txt` 雜湊前綴鎖定 `restore-keys`，達成快照級精準命中與物理隔離。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
