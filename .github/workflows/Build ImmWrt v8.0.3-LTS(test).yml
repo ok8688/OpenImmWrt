@@ -1,7 +1,7 @@
 # =====================================================================
 # 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v8.0.3 (25.12.1 TSAR BOMBA)
 # =====================================================================
-# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存 + Diagnostic Probe 2)。
+# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存 + Diagnostic Probe 3)。
 # 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
 # 終極融合：
 # 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
@@ -10,7 +10,7 @@
 # 4. [v8.0.3] 升級 ib v1.8 備份引擎，修復 tar 目錄項誤判，整合 wg-quick 支援、qrencode。
 # 5. [SDC v1.4 Final] 導入 OpenWrt Native dumpinfo 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；導入可觀測性日誌。
 # 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
-# 7. [Diagnostic Probe 2] 鎖定 `golang-values.mk` 萃取真正的變數與 Hash 定義。
+# 7. [Diagnostic Probe 3] 廣域掃描 `feeds/packages/lang/golang`，精準定位 Go Patch Version 與 Hash 的藏身處。
 # =====================================================================
 
 name: Build ImmWrt v8.0.3-LTS
@@ -146,19 +146,21 @@ jobs:
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
-          # 🔬 DIAGNOSTIC PROBE 2: Audit golang-values.mk
+          # 🔬 DIAGNOSTIC PROBE 3: Deep Search for Go Patch Version
           # =====================================================
-          echo "=== 🔬 Golang Feed Audit 2 ==="
+          echo "=== 🔬 Golang Feed Audit 3 ==="
           GO_FEED_DIR="feeds/packages/lang/golang"
-          echo "--- [golang-values.mk] ---"
-          if [ -f "$GO_FEED_DIR/golang-values.mk" ]; then
-            grep -E 'GO_DEFAULT_VERSION|GO_VERSION|GO_BOOTSTRAP_VERSION|PKG_HASH|PKG_VERSION' \
-              "$GO_FEED_DIR/golang-values.mk" || true
-          else
-            echo "⚠️ NOT FOUND: $GO_FEED_DIR/golang-values.mk"
-          fi
+          
+          echo "--- [All Go version definitions] ---"
+          grep -RnsE \
+            'GO_DEFAULT_VERSION|GO_VERSION_MAJOR_MINOR|GO_VERSION_PATCH|GO_VERSION=' \
+            "$GO_FEED_DIR" \
+            --include='*.mk' \
+            --include='Makefile' \
+            | head -n 100
+          
           echo "=========================================="
-          echo "🛑 Diagnostic probe 2 complete."
+          echo "🛑 Diagnostic probe 3 complete."
           exit 1
           # =====================================================
 
@@ -1711,11 +1713,11 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v8.0.3-LTS-diag2-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
-          name: ImmWrt v8.0.3-LTS (Diagnostic Probe 2)
+          tag_name: v8.0.3-LTS-diag3-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
+          name: ImmWrt v8.0.3-LTS (Diagnostic Probe 3)
           body: |
-            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (Diagnostic Probe 2)
-            - **觀測探針啟動**：精準定位 `golang-values.mk` 萃取真正的變數與 Hash 定義。
+            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (Diagnostic Probe 3 Run)
+            - **觀測探針啟動**：使用 `grep -RnsE` 廣域掃描 `feeds/packages/lang/golang`，精確捕捉 Patch 版號與對應 Hash 的變數宣告位置。
             - 預期將於 `Installing feeds...` 步驟印出診斷日誌並中斷構建（`exit 1`）。
           files: release_assets/*
         env:
