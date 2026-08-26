@@ -259,7 +259,7 @@ jobs:
           readlink -f staging_dir/host/bin/meson.py
 
       # ================================================================
-      # 9. Verify APK host
+      # 9. Verify APK host Meson Ninja
       #
       # Previously confirmed PASS after Ninja was supplied.
       # ================================================================
@@ -378,67 +378,125 @@ jobs:
             | head -n 300
 
       # ================================================================
-      # 11. Diagnose Host OpenSSL Target
+      # 10.5. Repair Host OpenSSL for TEST ONLY
       #
       # IMPORTANT:
-      # This step ONLY diagnoses the actual OpenWrt source tree.
-      # It does NOT invent or build an OpenSSL target.
+      # This is a TEST-ONLY repair.
+      #
+      # Do NOT modify the ImmortalWrt OpenSSL Makefile.
+      # Do NOT modify Sing-box.
+      # Do NOT modify package/Makefile.
+      #
+      # The current fixed ImmortalWrt source expects:
+      #
+      #   staging_dir/host/bin/openssl
+      #
+      # for APK signing-key generation, but this source tree does not
+      # provide an OpenSSL HostBuild target.
+      #
+      # Therefore this test supplies the host executable from the
+      # Ubuntu runner and exposes it at the exact path expected by
+      # OpenWrt.
+      #
+      # If Sing-box subsequently compiles successfully, we have proven
+      # that the missing staging host OpenSSL is the blocking condition.
       # ================================================================
-      - name: Diagnose Host OpenSSL Target
+      - name: Repair Host OpenSSL for TEST ONLY
         shell: bash
         run: |
           set -euo pipefail
-          cd .
 
           echo "========================================"
-          echo "=== DIAGNOSE HOST OPENSSL TARGET ==="
+          echo "=== REPAIR HOST OPENSSL - TEST ONLY ==="
           echo "========================================"
 
-          echo "--- PACKAGE/SYSTEM/APK/MAKEFILE ---"
-          sed -n '1,240p' package/system/apk/Makefile || true
+          echo "--- SOURCE TREE OPENSSL HOSTBUILD CHECK ---"
+
+          if grep -nE \
+            'HostBuild|Host/Configure|Host/Compile|Host/Install' \
+            package/libs/openssl/Makefile
+          then
+            echo "WARNING: OpenSSL Makefile contains HostBuild infrastructure."
+          else
+            echo "Confirmed: OpenSSL package has no HostBuild infrastructure."
+          fi
 
           echo
-          echo "--- ALL HOST OPENSSL REFERENCES ---"
+          echo "--- UBUNTU HOST OPENSSL ---"
 
-          grep -RniE \
-            'HostBuild|HOST_BUILD|openssl.*host|host.*openssl|STAGING_DIR_HOST.*openssl' \
-            package include rules.mk 2>/dev/null || true
-
-          echo
-          echo "--- HOST OPENSSL TARGET CANDIDATES ---"
-
-          find package include \
-            -type f \
-            -print 2>/dev/null |
-          xargs grep -nE \
-            'HostBuild.*openssl|PKG_NAME.*openssl|HOST_BUILD.*openssl' \
-            2>/dev/null || true
+          command -v openssl
+          readlink -f "$(command -v openssl)"
+          openssl version
 
           echo
-          echo "--- OPENSSL IN PACKAGE MAKEFILES ---"
+          echo "--- PREVIOUS STAGING OPENSSL ---"
 
-          grep -RniE \
-            'PKG_NAME.*openssl|PKG_SOURCE.*openssl|Build/Host' \
-            package 2>/dev/null |
-          head -n 300 || true
-
-          echo
-          echo "--- CURRENT STAGING OPENSSL ---"
-
-          ls -l staging_dir/host/bin/openssl 2>/dev/null || true
+          if [ -e staging_dir/host/bin/openssl ]; then
+            ls -l staging_dir/host/bin/openssl
+            readlink -f staging_dir/host/bin/openssl || true
+          else
+            echo "staging_dir/host/bin/openssl: NOT FOUND"
+          fi
 
           echo
-          echo "--- MAKE TARGET HELP ---"
+          echo "--- CREATE EXACT OPENWRT HOST PATH ---"
 
-          make help 2>/dev/null | grep -i openssl || true
+          mkdir -p staging_dir/host/bin
+
+          rm -f staging_dir/host/bin/openssl
+
+          ln -s "$(readlink -f "$(command -v openssl)")" \
+            staging_dir/host/bin/openssl
 
           echo
-          echo "========================================"
-          echo "=== DIAGNOSIS COMPLETE ==="
-          echo "========================================"
+          echo "--- VERIFY STAGING OPENSSL ---"
+
+          test -x staging_dir/host/bin/openssl
+
+          echo "Path:"
+          readlink -f staging_dir/host/bin/openssl
+
+          echo
+          echo "Version:"
+          staging_dir/host/bin/openssl version
+
+          echo
+          echo "--- VERIFY REQUIRED EC COMMAND ---"
+
+          rm -f /tmp/test-apk-private-key.pem
+
+          staging_dir/host/bin/openssl \
+            ecparam \
+            -name prime256v1 \
+            -genkey \
+            -noout \
+            -out /tmp/test-apk-private-key.pem
+
+          test -s /tmp/test-apk-private-key.pem
+
+          echo "ECDSA key generation: PASS"
+
+          echo
+          echo "--- VERIFY PUBLIC KEY GENERATION ---"
+
+          rm -f /tmp/test-apk-public-key.pem
+
+          staging_dir/host/bin/openssl \
+            ec \
+            -in /tmp/test-apk-private-key.pem \
+            -pubout \
+            > /tmp/test-apk-public-key.pem
+
+          test -s /tmp/test-apk-public-key.pem
+
+          echo "ECDSA public key generation: PASS"
+
+          echo
+          echo "--- HOST OPENSSL REPAIR RESULT ---"
+          echo "staging_dir/host/bin/openssl: READY"
 
       # ================================================================
-      # 12. Inspect APK signing key rule
+      # 11. Inspect APK signing key rule
       # ================================================================
       - name: Inspect APK signing key rule
         shell: bash
@@ -464,7 +522,7 @@ jobs:
             | head -n 100 || true
 
       # ================================================================
-      # 13. Inspect host dependency infrastructure
+      # 12. Inspect host dependency infrastructure
       # ================================================================
       - name: Inspect host dependency infrastructure
         shell: bash
@@ -493,7 +551,7 @@ jobs:
             | head -n 500 || true
 
       # ================================================================
-      # 14. State report before real build
+      # 13. State report before real build
       # ================================================================
       - name: State report
         shell: bash
@@ -534,14 +592,11 @@ jobs:
           echo
           echo "OpenSSL:"
 
-          if [ -x staging_dir/host/bin/openssl ]; then
-            staging_dir/host/bin/openssl version
-          else
-            echo "NOT FOUND"
-          fi
+          test -x staging_dir/host/bin/openssl
+          staging_dir/host/bin/openssl version
 
       # ================================================================
-      # 15. REAL SING-BOX COMPILE TEST
+      # 14. REAL SING-BOX COMPILE TEST
       # ================================================================
       - name: Real Sing-box compile test
         shell: bash
@@ -563,6 +618,12 @@ jobs:
 
           test -x staging_dir/host/bin/meson.py
           staging_dir/host/bin/meson.py --version
+
+          echo
+          echo "--- VERIFY STAGING OPENSSL ---"
+
+          test -x staging_dir/host/bin/openssl
+          staging_dir/host/bin/openssl version
 
           echo
           echo "--- VERIFY SING-BOX MAKEFILE ---"
@@ -597,7 +658,7 @@ jobs:
           echo "========================================"
 
       # ================================================================
-      # 16. Final audit
+      # 15. Final audit
       # ================================================================
       - name: Final audit
         shell: bash
@@ -637,12 +698,8 @@ jobs:
 
           echo
           echo "OpenWrt staging OpenSSL:"
-
-          if [ -x staging_dir/host/bin/openssl ]; then
-            staging_dir/host/bin/openssl version
-          else
-            echo "NOT FOUND"
-          fi
+          test -x staging_dir/host/bin/openssl
+          staging_dir/host/bin/openssl version
 
           echo
           echo "========================================"
