@@ -378,7 +378,67 @@ jobs:
             | head -n 300
 
       # ================================================================
-      # 11. Inspect APK signing key rule
+      # 11. Diagnose Host OpenSSL Target
+      #
+      # IMPORTANT:
+      # This step ONLY diagnoses the actual OpenWrt source tree.
+      # It does NOT invent or build an OpenSSL target.
+      # ================================================================
+      - name: Diagnose Host OpenSSL Target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .
+
+          echo "========================================"
+          echo "=== DIAGNOSE HOST OPENSSL TARGET ==="
+          echo "========================================"
+
+          echo "--- PACKAGE/SYSTEM/APK/MAKEFILE ---"
+          sed -n '1,240p' package/system/apk/Makefile || true
+
+          echo
+          echo "--- ALL HOST OPENSSL REFERENCES ---"
+
+          grep -RniE \
+            'HostBuild|HOST_BUILD|openssl.*host|host.*openssl|STAGING_DIR_HOST.*openssl' \
+            package include rules.mk 2>/dev/null || true
+
+          echo
+          echo "--- HOST OPENSSL TARGET CANDIDATES ---"
+
+          find package include \
+            -type f \
+            -print 2>/dev/null |
+          xargs grep -nE \
+            'HostBuild.*openssl|PKG_NAME.*openssl|HOST_BUILD.*openssl' \
+            2>/dev/null || true
+
+          echo
+          echo "--- OPENSSL IN PACKAGE MAKEFILES ---"
+
+          grep -RniE \
+            'PKG_NAME.*openssl|PKG_SOURCE.*openssl|Build/Host' \
+            package 2>/dev/null |
+          head -n 300 || true
+
+          echo
+          echo "--- CURRENT STAGING OPENSSL ---"
+
+          ls -l staging_dir/host/bin/openssl 2>/dev/null || true
+
+          echo
+          echo "--- MAKE TARGET HELP ---"
+
+          make help 2>/dev/null | grep -i openssl || true
+
+          echo
+          echo "========================================"
+          echo "=== DIAGNOSIS COMPLETE ==="
+          echo "========================================"
+
+      # ================================================================
+      # 12. Inspect APK signing key rule
       # ================================================================
       - name: Inspect APK signing key rule
         shell: bash
@@ -404,7 +464,7 @@ jobs:
             | head -n 100 || true
 
       # ================================================================
-      # 12. Inspect host dependency infrastructure
+      # 13. Inspect host dependency infrastructure
       # ================================================================
       - name: Inspect host dependency infrastructure
         shell: bash
@@ -433,7 +493,7 @@ jobs:
             | head -n 500 || true
 
       # ================================================================
-      # 13. State report before real build
+      # 14. State report before real build
       # ================================================================
       - name: State report
         shell: bash
@@ -481,7 +541,7 @@ jobs:
           fi
 
       # ================================================================
-      # 14. REAL SING-BOX COMPILE TEST
+      # 15. REAL SING-BOX COMPILE TEST
       # ================================================================
       - name: Real Sing-box compile test
         shell: bash
@@ -537,7 +597,7 @@ jobs:
           echo "========================================"
 
       # ================================================================
-      # 15. Final audit
+      # 16. Final audit
       # ================================================================
       - name: Final audit
         shell: bash
