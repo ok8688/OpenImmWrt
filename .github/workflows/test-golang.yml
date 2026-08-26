@@ -1,3 +1,4 @@
+```yaml
 name: TEST - Sing-box Target Audit
 
 on:
@@ -211,6 +212,9 @@ jobs:
           echo "Ninja path:"
           readlink -f staging_dir/host/bin/ninja
 
+      # ================================================================
+      # 8. Build OpenWrt host Meson
+      # ================================================================
       - name: Build OpenWrt host Meson
         shell: bash
         run: |
@@ -237,21 +241,48 @@ jobs:
           ls -l staging_dir/host/bin/meson.py
 
       # ================================================================
-      # 8. Verify OpenWrt host tools
+      # 9. Verify APK host Meson/Ninja build
+      #
+      # This is the critical diagnostic step.
+      #
+      # Previous failure:
+      #
+      # ninja: fatal: chdir to
+      # build_dir/hostpkg/apk-3.0.5/openwrt-build
+      # No such file or directory
+      #
+      # Therefore APK host-compile must pass before testing sing-box.
       # ================================================================
-- name: Verify APK host Meson/Ninja build
-  shell: bash
-  run: |
-    set -euo pipefail
+      - name: Verify APK host Meson/Ninja build
+        shell: bash
+        run: |
+          set -euo pipefail
 
-    echo "========================================"
-    echo "=== VERIFY APK HOST MESON/NINJA ==="
-    echo "========================================"
+          echo "========================================"
+          echo "=== VERIFY APK HOST MESON/NINJA ==="
+          echo "========================================"
 
-    make package/system/apk/host/compile V=s -j1
+          echo "--- HOST TOOLS ---"
+
+          test -x staging_dir/host/bin/ninja
+          test -x staging_dir/host/bin/meson.py
+
+          echo "Ninja:"
+          staging_dir/host/bin/ninja --version
+
+          echo "Meson:"
+          staging_dir/host/bin/meson.py --version
+
+          echo
+          echo "--- BUILD APK HOST ---"
+
+          make package/system/apk/host/compile V=s -j1
+
+          echo
+          echo "--- APK HOST BUILD PASSED ---"
 
       # ================================================================
-      # 9. Verify real Make target
+      # 10. Verify real Make target
       # ================================================================
       - name: Verify Make target
         shell: bash
@@ -268,7 +299,7 @@ jobs:
             2>&1 | tail -n 200
 
       # ================================================================
-      # 10. Verify source path is NOT a Make target
+      # 11. Verify source path is NOT a Make target
       # ================================================================
       - name: Verify source path is not a target
         shell: bash
@@ -307,7 +338,7 @@ jobs:
           exit "$rc"
 
       # ================================================================
-      # 11. Final audit
+      # 12. Final audit
       # ================================================================
       - name: Final audit
         shell: bash
@@ -336,4 +367,9 @@ jobs:
           staging_dir/host/bin/ninja --version
 
           echo
+          echo "OpenWrt staging Meson:"
+          staging_dir/host/bin/meson.py --version
+
+          echo
           echo "RESULT: PASS"
+```
