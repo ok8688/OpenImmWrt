@@ -8,6 +8,7 @@
 # 2. [手術植入] 升級 ib v1.8 原生備份工具，解耦套件強依賴，修復 tar 目錄項誤判。
 # 3. [手術植入] 補齊 WireGuard 核心、wg-quick 與 qrencode (QR Code 支援)。
 # 4. [SDC v1.4 Final] 優先使用 OpenWrt Native dumpinfo 解析精準取檔，並保留 Legacy pattern 作為防禦性 Fallback。
+# 5. [Native Bootstrap] 無縫替換官方 upstream lang/golang Feed，原生支持 Go 1.27+ 工具鏈編譯。
 # =====================================================================
 
 name: Build ImmWrt Master Snapshot
@@ -96,23 +97,6 @@ jobs:
           echo "Ccache: $(ccache --version | head -n1)" >> toolchain.info
           echo "Go: $(go version 2>/dev/null || echo 'unknown')" >> toolchain.info
 
-      - name: Install Go 1.26.7
-        run: |
-          set -euo pipefail
-          GO_VERSION="1.26.7"
-          wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
-            -O /tmp/go.tar.gz
-          sudo rm -rf /usr/local/go
-          sudo tar -C /usr/local -xzf /tmp/go.tar.gz
-          rm -f /tmp/go.tar.gz
-          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
-          export PATH="/usr/local/go/bin:$PATH"
-          hash -r
-          echo "===== Go version ====="
-          which go
-          go version
-          go env GOROOT
-          
       - name: Clone & Official PassWall Main Source
         run: |
           set -euo pipefail
@@ -124,6 +108,16 @@ jobs:
           
           echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
+          
+          # =====================================================
+          # 💥 [手術植入] 替換 Golang Feed 至 OpenWrt 官方最新主幹 (解鎖 Go 1.27)
+          # =====================================================
+          echo "▶️ [Step] Replacing golang feed with official upstream openwrt/packages..."
+          rm -rf feeds/packages/lang/golang
+          git clone --depth=1 https://github.com/openwrt/packages.git /tmp/openwrt-pkgs
+          cp -r /tmp/openwrt-pkgs/lang/golang feeds/packages/lang/golang
+          rm -rf /tmp/openwrt-pkgs
+          # =====================================================
           
           echo "▶️ [Step] Cloning Passwall ecosystem..."
           rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
@@ -848,7 +842,7 @@ jobs:
                           rm -f "$tmp"
 
                           if ! cp -p "$SAFETY/files$f" "$tmp" ||
-                               ! mv -f "$tmp" "$f"; then
+                             ! mv -f "$tmp" "$f"; then
 
                               printf \
           "CRITICAL: Rollback failed for %s\n" \
@@ -1224,7 +1218,7 @@ jobs:
                   rm -f "$tmp"
 
                   if ! cp -p "files$f" "$tmp" ||
-                       ! mv -f "$tmp" "$f"; then
+                     ! mv -f "$tmp" "$f"; then
 
                       rm -f "$tmp"
 
@@ -1546,17 +1540,6 @@ jobs:
           grep -iE "CONFIG_PACKAGE_(kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
           make defconfig && ./scripts/diffconfig.sh > ../logs_diffconfig.txt
           gzip -9f -c .config > ../logs_full.config.gz
-          
-      - name: Verify Go toolchain
-        run: |
-          set -euo pipefail
-          export PATH="/usr/local/go/bin:$PATH"
-          hash -r
-          echo "===== FINAL GO TOOLCHAIN ====="
-          which go
-          go version
-          go env GOVERSION
-          go env GOROOT
 
       - name: Build Firmware
         run: |
@@ -1687,6 +1670,7 @@ jobs:
           name: ImmWrt SNAPSHOT Experimental
           body: |
             ### 🧪 SNAPSHOT Experimental Build (SDC v1.4 Final)
+            - **Upstream Golang Feed 移植**：全面無縫替換官方 upstream `lang/golang`，原生成熟支持 Go 1.27+ 自舉編譯鏈條，解決 `sing-box` 高版本 Go 強制依賴。
             - **原生備份引擎**：注入 ib v1.8 原生備份工具，確立「11 REQUIRED + 6 OPTIONAL = up to 17 files」備份規格（含 Argon dark.css），賦予滾動版本 OpenWrt native /bin/sh 相容之原子回滾防護，並修復 tar 目錄項驗證誤判。
             - **JSON 韌性升級**：增強 jq 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
             - **WireGuard 依賴補齊**：明確宣告 WireGuard 核心模組、wg-quick 工具及 qrencode。
