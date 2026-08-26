@@ -211,6 +211,27 @@ jobs:
           echo "Ninja path:"
           readlink -f staging_dir/host/bin/ninja
 
+      - name: Build OpenWrt host Meson
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== BUILD OPENWRT HOST MESON ==="
+          echo "========================================"
+
+          make tools/meson/compile V=s
+
+          echo "--- AFTER BUILD ---"
+
+          test -e staging_dir/host/bin/meson
+
+          echo "OpenWrt staging Meson:"
+          staging_dir/host/bin/meson --version
+
+          echo "Meson path:"
+          ls -l staging_dir/host/bin/meson
+
       # ================================================================
       # 8. Verify OpenWrt host tools
       # ================================================================
