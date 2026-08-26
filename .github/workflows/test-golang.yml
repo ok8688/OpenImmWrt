@@ -239,36 +239,16 @@ jobs:
       # ================================================================
       # 8. Verify OpenWrt host tools
       # ================================================================
-      - name: Verify OpenWrt host tools
-        shell: bash
-        run: |
-          set -euo pipefail
+- name: Verify APK host Meson/Ninja build
+  shell: bash
+  run: |
+    set -euo pipefail
 
-          echo "========================================"
-          echo "=== VERIFY OPENWRT HOST TOOLS ==="
-          echo "========================================"
+    echo "========================================"
+    echo "=== VERIFY APK HOST MESON/NINJA ==="
+    echo "========================================"
 
-          echo "--- OPENWRT STAGING NINJA ---"
-          test -x staging_dir/host/bin/ninja
-          ls -l staging_dir/host/bin/ninja
-          staging_dir/host/bin/ninja --version
-
-          echo "--- OPENWRT HOST PYTHON ---"
-          staging_dir/host/bin/python3 --version
-
-          echo "--- OPENWRT MESON ---"
-          test -f staging_dir/host/bin/meson.py
-          ls -l staging_dir/host/bin/meson.py
-
-          echo "--- MESON VERSION ---"
-          staging_dir/host/bin/meson.py --version
-
-          echo "--- HOST TOOLS VERIFIED ---"
-
-          echo
-          echo "========================================"
-          echo "=== HOST TOOL VERIFICATION PASSED ==="
-          echo "========================================"
+    make package/system/apk/host/compile V=s -j1
 
       # ================================================================
       # 9. Verify real Make target
