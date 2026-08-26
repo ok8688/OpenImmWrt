@@ -1,20 +1,16 @@
-name: TEST - Sing-box Target Audit
+name: TEST - libgcc_s.so Toolchain Diagnosis
 
 on:
   workflow_dispatch:
 
 jobs:
-  audit:
+  diagnose:
     runs-on: ubuntu-22.04
 
     steps:
 
       # ================================================================
-      # 1. Checkout ImmortalWrt
-      #
-      # IMPORTANT:
-      # ImmortalWrt always uses the latest master commit.
-      # This test is for the current SNAPSHOT build environment.
+      # 1. Checkout latest ImmortalWrt
       # ================================================================
       - name: Checkout ImmortalWrt
         uses: actions/checkout@v4
@@ -27,12 +23,7 @@ jobs:
       # 2. Clone latest official PassWall-Packages
       #
       # IMPORTANT:
-      # Always pull the CURRENT latest main commit.
-      #
-      # Official repository:
-      # Openwrt-Passwall/openwrt-passwall-packages
-      #
-      # DO NOT pin an old PassWall-Packages commit here.
+      # This remains exactly the current SNAPSHOT source model.
       # ================================================================
       - name: Clone latest official PassWall-Packages
         shell: bash
@@ -50,11 +41,6 @@ jobs:
             package/openwrt-passwall-packages
 
           echo
-          echo "--- PASSWALL-PACKAGES REMOTE ---"
-
-          git -C package/openwrt-passwall-packages remote -v
-
-          echo
           echo "--- PASSWALL-PACKAGES HEAD ---"
 
           git -C package/openwrt-passwall-packages rev-parse HEAD
@@ -66,7 +52,7 @@ jobs:
             log -1 --oneline --decorate
 
       # ================================================================
-      # 3. Verify source tree
+      # 3. Verify source tree and commits
       # ================================================================
       - name: Verify source tree
         shell: bash
@@ -81,8 +67,12 @@ jobs:
           pwd
 
           echo
-          echo "--- IMMORTALWRT ---"
+          echo "--- IMMORTALWRT COMMIT ---"
           git rev-parse HEAD
+
+          echo
+          echo "--- PASSWALL-PACKAGES COMMIT ---"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
 
           echo
           echo "--- REQUIRED DIRECTORIES ---"
@@ -99,48 +89,8 @@ jobs:
             echo "OK: $path"
           done
 
-          echo
-          echo "--- SCRIPT DIRECTORY ---"
-          ls -la scripts
-
       # ================================================================
-      # 4. Audit Sing-box package
-      # ================================================================
-      - name: Audit Sing-box package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== SING-BOX PACKAGE AUDIT ==="
-          echo "========================================"
-
-          SINGBOX_MAKEFILE="package/openwrt-passwall-packages/sing-box/Makefile"
-
-          test -f "$SINGBOX_MAKEFILE"
-
-          echo "--- COMMITS ---"
-
-          echo "ImmortalWrt:"
-          git rev-parse HEAD
-
-          echo
-          echo "Latest PassWall-Packages:"
-          git -C package/openwrt-passwall-packages rev-parse HEAD
-
-          echo
-          echo "--- SING-BOX DIRECTORY ---"
-
-          ls -la \
-            package/openwrt-passwall-packages/sing-box
-
-          echo
-          echo "--- SING-BOX MAKEFILE ---"
-
-          sed -n '1,180p' "$SINGBOX_MAKEFILE"
-
-      # ================================================================
-      # 5. Generate package metadata
+      # 4. Generate package metadata
       # ================================================================
       - name: Generate package metadata
         shell: bash
@@ -154,572 +104,285 @@ jobs:
           make defconfig
 
       # ================================================================
-      # 5A. Diagnose Host OpenSSL
+      # 5. Capture toolchain configuration
       #
-      # ADDED TEST STEP ONLY.
-      #
-      # IMPORTANT:
-      # Do NOT modify OpenWrt source files.
-      # Do NOT modify package Makefiles.
-      # Only locate the expected Host OpenSSL target and
-      # inspect the system OpenSSL available on the GitHub runner.
+      # DIAGNOSTIC ONLY.
+      # No source modification.
       # ================================================================
-      - name: Diagnose Host OpenSSL
+      - name: Capture toolchain configuration
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== DIAGNOSE HOST OPENSSL ==="
+          echo "=== TOOLCHAIN CONFIGURATION ==="
           echo "========================================"
 
-          echo "--- EXPECTED OPENSSL ---"
+          echo "--- TARGET ---"
 
-          echo "Expected:"
-          echo "staging_dir/host/bin/openssl"
-
-          if [ -e staging_dir/host/bin/openssl ]; then
-            echo "FOUND:"
-            ls -l staging_dir/host/bin/openssl
-            readlink -f staging_dir/host/bin/openssl || true
-          else
-            echo "NOT FOUND:"
-            echo "staging_dir/host/bin/openssl"
-          fi
-
-          echo
-          echo "--- SYSTEM OPENSSL ---"
-
-          if command -v openssl >/dev/null 2>&1; then
-            echo "System OpenSSL:"
-            command -v openssl
-            readlink -f "$(command -v openssl)" || true
-            openssl version
-          else
-            echo "System OpenSSL: NOT FOUND"
-          fi
-
-          echo
-          echo "--- HOST OPENSSL REFERENCES ---"
-
-          grep -RniE \
-            'STAGING_DIR_HOST.*openssl|openssl.*STAGING_DIR_HOST|BUILD_KEY_APK_SEC|BUILD_KEY_APK_PUB' \
-            package \
-            include \
-            tools \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 300 || true
-
-          echo
-          echo "--- OPENSSL PACKAGE MAKEFILE ---"
-
-          if [ -f package/libs/openssl/Makefile ]; then
-            sed -n '1,430p' package/libs/openssl/Makefile
-          else
-            echo "package/libs/openssl/Makefile: NOT FOUND"
-          fi
-
-          echo
-          echo "--- OPENSSL HOST TARGET DIRECTORIES ---"
-
-          find tools package \
-            -maxdepth 5 \
-            -type d \
-            \( \
-              -iname '*openssl*' \
-              -o -iname '*libssl*' \
-              -o -iname '*libcrypto*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 300
-
-          echo
-          echo "--- CURRENT STAGING HOST BIN ---"
-
-          ls -la staging_dir/host/bin 2>/dev/null \
+          grep -E \
+            'CONFIG_TARGET_|CONFIG_ARCH|CONFIG_CPU|CONFIG_LIBC|CONFIG_GCC_VERSION' \
+            .config \
             | head -n 200 || true
-
-      # ================================================================
-      # 5B. Repair Host OpenSSL for TEST
-      #
-      # ADDED TEST STEP ONLY.
-      #
-      # IMPORTANT:
-      # This is intentionally a TEST-RUNNER repair.
-      #
-      # We do NOT modify:
-      #   - package/Makefile
-      #   - package/libs/openssl
-      #   - package/system/apk
-      #   - sing-box
-      #   - PassWall-Packages
-      #
-      # We only provide the OpenSSL executable at the exact path
-      # required by the current package infrastructure.
-      # ================================================================
-      - name: Repair Host OpenSSL for test
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== REPAIR HOST OPENSSL FOR TEST ==="
-          echo "========================================"
-
-          echo "--- SYSTEM OPENSSL ---"
-
-          command -v openssl
-          readlink -f "$(command -v openssl)" || true
-          openssl version
-
-          echo
-          echo "--- CREATE HOST BIN DIRECTORY ---"
-
-          mkdir -p staging_dir/host/bin
-
-          echo
-          echo "--- EXISTING STAGING OPENSSL ---"
-
-          if [ -e staging_dir/host/bin/openssl ]; then
-            ls -l staging_dir/host/bin/openssl
-          else
-            echo "No existing staging OpenSSL."
-          fi
-
-          echo
-          echo "--- INSTALL TEST HOST OPENSSL PATH ---"
-
-          if [ -e staging_dir/host/bin/openssl ]; then
-            if [ -L staging_dir/host/bin/openssl ]; then
-              echo "Existing staging OpenSSL is a symlink."
-              readlink -f staging_dir/host/bin/openssl || true
-            else
-              echo "Existing staging OpenSSL is a regular file."
-            fi
-          else
-            ln -s "$(command -v openssl)" \
-              staging_dir/host/bin/openssl
-          fi
-
-          echo
-          echo "--- VERIFY TEST HOST OPENSSL ---"
-
-          test -x staging_dir/host/bin/openssl
-
-          ls -l staging_dir/host/bin/openssl
-
-          echo
-          echo "Resolved path:"
-          readlink -f staging_dir/host/bin/openssl
-
-          echo
-          echo "Version:"
-          staging_dir/host/bin/openssl version
-
-          echo
-          echo "========================================"
-          echo "=== HOST OPENSSL TEST REPAIR: PASS ==="
-          echo "========================================"
-
-      # ================================================================
-      # 5C. Verify Host OpenSSL repair
-      #
-      # ADDED TEST STEP ONLY.
-      #
-      # This reproduces the exact operations required by
-      # package/Makefile before Sing-box compilation.
-      # ================================================================
-      - name: Verify Host OpenSSL repair
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== VERIFY HOST OPENSSL REPAIR ==="
-          echo "========================================"
-
-          OPENSSL="staging_dir/host/bin/openssl"
-
-          test -x "$OPENSSL"
-
-          echo "--- OPENSSL PATH ---"
-          readlink -f "$OPENSSL"
-
-          echo
-          echo "--- OPENSSL VERSION ---"
-          "$OPENSSL" version
-
-          echo
-          echo "--- TEST EC PRIVATE KEY GENERATION ---"
-
-          rm -f private-key.pem public-key.pem
-
-          "$OPENSSL" \
-            ecparam \
-            -name prime256v1 \
-            -genkey \
-            -noout \
-            -out private-key.pem
-
-          test -s private-key.pem
-
-          echo
-          echo "--- TEST EC PUBLIC KEY GENERATION ---"
-
-          "$OPENSSL" \
-            ec \
-            -in private-key.pem \
-            -pubout \
-            > public-key.pem
-
-          test -s public-key.pem
-
-          echo
-          echo "--- KEY FILES ---"
-
-          ls -lh \
-            private-key.pem \
-            public-key.pem
-
-          echo
-          echo "========================================"
-          echo "=== HOST OPENSSL VERIFICATION: PASS ==="
-          echo "========================================"
-
-      # ================================================================
-      # 5D. Diagnose libgcc_s.so
-      #
-      # ADDED TEST STEP ONLY.
-      #
-      # IMPORTANT:
-      # This step is DIAGNOSTIC ONLY.
-      #
-      # DO NOT:
-      #   - copy libgcc_s.so
-      #   - create libgcc_s.so symlinks
-      #   - modify toolchain files
-      #   - modify OpenWrt source
-      #   - modify package Makefiles
-      #   - modify PassWall
-      #   - modify sing-box
-      #
-      # The purpose is to discover where libgcc_s.so actually exists,
-      # whether GCC generated it, and whether the expected toolchain
-      # staging directory is incomplete.
-      # ================================================================
-      - name: Diagnose libgcc_s.so
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== DIAGNOSE LIBGCC_S.SO ==="
-          echo "========================================"
-
-          echo
-          echo "--- TARGET INFORMATION ---"
-
-          echo "ARCH:"
-          uname -m
-
-          echo
-          echo "HOST GCC:"
-          gcc --version | head -n 3
-
-          echo
-          echo "HOST G++:"
-          g++ --version | head -n 3
-
-          echo
-          echo "TARGET TOOLCHAIN PREFIXES ---"
-
-          compgen -c | grep '^aarch64-openwrt-linux-musl-' \
-            | sort -u \
-            | head -n 100 || true
-
-          echo
-          echo "--- STAGING DIR ---"
-
-          find staging_dir \
-            -maxdepth 2 \
-            -type d \
-            -print \
-            | sort \
-            | head -n 300
-
-          echo
-          echo "--- TOOLCHAIN STAGING DIRECTORIES ---"
-
-          find staging_dir \
-            -maxdepth 2 \
-            -type d \
-            -name 'toolchain-*' \
-            -print \
-            | sort
-
-          echo
-          echo "--- EXPECTED TOOLCHAIN DIRECTORY ---"
-
-          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
-
-          if [ -d "$EXPECTED_TOOLCHAIN" ]; then
-            echo "FOUND:"
-            echo "$EXPECTED_TOOLCHAIN"
-          else
-            echo "NOT FOUND:"
-            echo "$EXPECTED_TOOLCHAIN"
-          fi
-
-          echo
-          echo "--- EXPECTED LIBGCC LOCATION ---"
-
-          EXPECTED_LIBGCC="$EXPECTED_TOOLCHAIN/lib/libgcc_s.so"
-
-          echo "Expected prefix:"
-          echo "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*"
-
-          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
-            echo "EXPECTED LIBGCC FILE FOUND:"
-            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
-          else
-            echo "EXPECTED LIBGCC FILE NOT FOUND."
-          fi
-
-          echo
-          echo "--- FIND ALL libgcc_s.so FILES ---"
-
-          find . \
-            -type f \
-            \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500
-
-          echo
-          echo "--- FIND ALL libgcc_s.so SYMLINKS ---"
-
-          find . \
-            -type l \
-            \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500
-
-          echo
-          echo "--- SYSTEM GCC RUNTIME LIBGCC ---"
-
-          GCC_LIBGCC_PATH="$(gcc -print-libgcc-file-name)"
-
-          echo "gcc -print-libgcc-file-name:"
-          echo "$GCC_LIBGCC_PATH"
-
-          if [ -e "$GCC_LIBGCC_PATH" ]; then
-            echo "HOST GCC libgcc file exists:"
-            ls -lah "$GCC_LIBGCC_PATH"
-            file "$GCC_LIBGCC_PATH" || true
-          else
-            echo "HOST GCC libgcc file does NOT exist."
-          fi
-
-          echo
-          echo "--- TARGET GCC RUNTIME LIBGCC ---"
-
-          TARGET_GCC="aarch64-openwrt-linux-musl-gcc"
-
-          if command -v "$TARGET_GCC" >/dev/null 2>&1; then
-            echo "TARGET GCC:"
-            command -v "$TARGET_GCC"
-
-            echo
-            echo "TARGET GCC VERSION:"
-            "$TARGET_GCC" --version | head -n 3
-
-            echo
-            echo "TARGET GCC LIBGCC:"
-            "$TARGET_GCC" -print-libgcc-file-name || true
-
-            TARGET_LIBGCC="$("$TARGET_GCC" -print-libgcc-file-name 2>/dev/null || true)"
-
-            if [ -n "$TARGET_LIBGCC" ] && [ -e "$TARGET_LIBGCC" ]; then
-              echo "TARGET GCC libgcc exists:"
-              ls -lah "$TARGET_LIBGCC"
-              file "$TARGET_LIBGCC" || true
-            else
-              echo "TARGET GCC libgcc does NOT exist or target GCC is incomplete."
-            fi
-          else
-            echo "TARGET GCC NOT FOUND:"
-            echo "$TARGET_GCC"
-          fi
-
-          echo
-          echo "--- TOOLCHAIN GCC DIRECTORIES ---"
-
-          find staging_dir \
-            -type f \
-            \( \
-              -name 'gcc' \
-              -o -name 'cc1' \
-              -o -name 'libgcc_s.so*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500
-
-          echo
-          echo "--- TOOLCHAIN LIB DIRECTORIES ---"
-
-          find staging_dir \
-            -type d \
-            \( \
-              -name 'lib' \
-              -o -name 'usr' \
-            \) \
-            -path '*toolchain*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500
-
-          echo
-          echo "--- LIBGCC REFERENCES IN SOURCE TREE ---"
-
-          grep -RniE \
-            'libgcc_s\.so|libgcc1|GCC_VERSION|gcc-14\.4\.0' \
-            package \
-            toolchain \
-            include \
-            rules.mk \
-            Makefile \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 800 || true
-
-          echo
-          echo "--- TOOLCHAIN PACKAGE MAKEFILE ---"
-
-          if [ -f package/libs/toolchain/Makefile ]; then
-            echo "package/libs/toolchain/Makefile"
-
-            grep -n -A25 -B25 \
-              'libgcc_s\.so\|libgcc1' \
-              package/libs/toolchain/Makefile \
-              | head -n 500 || true
-          else
-            echo "package/libs/toolchain/Makefile: NOT FOUND"
-          fi
 
           echo
           echo "--- TOOLCHAIN PACKAGE CONFIG ---"
 
-          grep -nE \
-            'CONFIG_PACKAGE_libgcc|CONFIG_GCC_VERSION|CONFIG_TOOLCHAIN' \
-            .config \
-            2>/dev/null \
-            | head -n 300 || true
+          grep -n \
+            '^CONFIG_PACKAGE_libgcc=' \
+            .config || true
 
           echo
-          echo "--- STAGING TOOLCHAIN CONTENTS ---"
+          echo "--- GCC VERSION ---"
 
-          if [ -d "$EXPECTED_TOOLCHAIN" ]; then
-            find "$EXPECTED_TOOLCHAIN" \
-              -maxdepth 3 \
-              -print \
-              | sort \
-              | head -n 800
+          grep -n \
+            '^CONFIG_GCC_VERSION=' \
+            .config || true
+
+          echo
+          echo "--- TOOLCHAIN MAKEFILE REFERENCES ---"
+
+          grep -nE \
+            'TOOLCHAIN_DIR|libgcc_s\.so|CONFIG_GCC_VERSION' \
+            package/libs/toolchain/Makefile \
+            | head -n 200 || true
+
+      # ================================================================
+      # 6. Resolve expected TOOLCHAIN_DIR
+      #
+      # IMPORTANT:
+      # This is pure diagnosis.
+      # ================================================================
+      - name: Resolve TOOLCHAIN_DIR
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== RESOLVE TOOLCHAIN_DIR ==="
+          echo "========================================"
+
+          echo "--- STAGING_DIR ---"
+
+          if [ -d staging_dir ]; then
+            ls -lad staging_dir
           else
-            echo "Expected toolchain directory unavailable."
+            echo "staging_dir: NOT FOUND"
           fi
 
           echo
-          echo "========================================"
-          echo "=== LIBGCC_S.SO DIAGNOSTIC COMPLETE ==="
-          echo "========================================"
+          echo "--- STAGING_DIR CONTENTS ---"
 
-      # ================================================================
-      # 5E. Diagnose toolchain staging state
-      #
-      # ADDED TEST STEP ONLY.
-      #
-      # DIAGNOSTIC ONLY.
-      # No files are copied, created, linked, or modified.
-      # ================================================================
-      - name: Diagnose toolchain staging state
-        shell: bash
-        run: |
-          set -euo pipefail
+          if [ -d staging_dir ]; then
+            find staging_dir \
+              -maxdepth 2 \
+              -mindepth 1 \
+              -print \
+              | sort \
+              | head -n 500
+          else
+            echo "Nothing to inspect."
+          fi
 
-          echo "========================================"
-          echo "=== DIAGNOSE TOOLCHAIN STAGING STATE ==="
-          echo "========================================"
-
-          echo "--- STAGING DIRECTORY TIMESTAMPS ---"
+          echo
+          echo "--- EXPECTED GCC TOOLCHAIN DIRECTORIES ---"
 
           find staging_dir \
             -maxdepth 2 \
             -type d \
             -name 'toolchain-*' \
-            -printf '%TY-%Tm-%Td %TH:%TM:%TS %p\n' \
+            -print \
             2>/dev/null \
-            | sort || true
+            | sort \
+            | head -n 100
 
           echo
-          echo "--- TOOLCHAIN STAMP FILES ---"
+          echo "--- GCC 14.4.0 TOOLCHAIN DIRECTORIES ---"
+
+          find staging_dir \
+            -maxdepth 3 \
+            -type d \
+            -name '*gcc-14.4.0*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 100
+
+      # ================================================================
+      # 7. Inspect GCC compiler availability
+      # ================================================================
+      - name: Inspect GCC compiler state
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== GCC COMPILER STATE ==="
+          echo "========================================"
+
+          echo "--- SYSTEM GCC ---"
+
+          if command -v gcc >/dev/null 2>&1; then
+            command -v gcc
+            gcc --version | head -n 5
+          else
+            echo "System gcc: NOT FOUND"
+          fi
+
+          echo
+          echo "--- AARCH64 OPENWRT GCC ---"
+
+          if command -v aarch64-openwrt-linux-musl-gcc >/dev/null 2>&1; then
+            command -v aarch64-openwrt-linux-musl-gcc
+            aarch64-openwrt-linux-musl-gcc --version | head -n 5
+          else
+            echo "aarch64-openwrt-linux-musl-gcc: NOT FOUND"
+          fi
+
+          echo
+          echo "--- STAGING HOST BIN ---"
+
+          if [ -d staging_dir/host/bin ]; then
+            ls -la staging_dir/host/bin \
+              | head -n 300
+          else
+            echo "staging_dir/host/bin: NOT FOUND"
+          fi
+
+      # ================================================================
+      # 8. Locate libgcc_s.so BEFORE toolchain compile
+      #
+      # IMPORTANT:
+      # Do not fail if the file does not exist.
+      # ================================================================
+      - name: Locate libgcc_s.so before toolchain compile
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== LIBGCC_S.SO BEFORE TOOLCHAIN BUILD ==="
+          echo "========================================"
+
+          echo "--- ALL libgcc_s.so FILES ---"
+
+          find . \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500
+
+          echo
+          echo "--- ALL GCC LIB DIRECTORIES ---"
+
+          find staging_dir \
+            -type d \
+            -path '*/lib/gcc/*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 300
+
+          echo
+          echo "--- TOOLCHAIN lib DIRECTORIES ---"
+
+          find staging_dir \
+            -type d \
+            -path '*/toolchain-*/lib' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 300
+
+      # ================================================================
+      # 9. Inspect toolchain stamps BEFORE compile
+      # ================================================================
+      - name: Inspect toolchain stamps before compile
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== TOOLCHAIN STAMPS BEFORE COMPILE ==="
+          echo "========================================"
+
+          echo "--- TOOLCHAIN BUILD_DIR ---"
+
+          find build_dir \
+            -maxdepth 4 \
+            -type f \
+            -name '.*toolchain*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500
+
+          echo
+          echo "--- TOOLCHAIN STAGING STAMPS ---"
 
           find staging_dir \
             -type f \
-            \( \
-              -name '*.stamp' \
-              -o -name '.prepared*' \
-              -o -name '.configured*' \
-              -o -name '.built*' \
-            \) \
-            -path '*toolchain*' \
+            -iname '*toolchain*' \
             -print \
             2>/dev/null \
             | sort \
-            | head -n 800
+            | head -n 500
+
+      # ================================================================
+      # 10. Run OpenWrt toolchain compile
+      #
+      # IMPORTANT:
+      # This is NOT a repair.
+      #
+      # We are asking OpenWrt's own toolchain infrastructure to
+      # construct the expected toolchain.
+      #
+      # Failure is intentionally captured so diagnosis continues.
+      # ================================================================
+      - name: Run OpenWrt toolchain compile
+        shell: bash
+        run: |
+          set +e
+
+          echo "========================================"
+          echo "=== OPENWRT TOOLCHAIN COMPILE ==="
+          echo "========================================"
+
+          make package/libs/toolchain/compile V=s -j1
+
+          RC=$?
 
           echo
-          echo "--- BUILD_DIR TOOLCHAIN STATE ---"
+          echo "========================================"
+          echo "=== TOOLCHAIN COMPILE EXIT CODE: $RC ==="
+          echo "========================================"
 
-          find build_dir \
-            -maxdepth 5 \
+          exit 0
+
+      # ================================================================
+      # 11. Locate libgcc_s.so AFTER toolchain compile
+      # ================================================================
+      - name: Locate libgcc_s.so after toolchain compile
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== LIBGCC_S.SO AFTER TOOLCHAIN BUILD ==="
+          echo "========================================"
+
+          echo "--- ALL libgcc_s.so FILES ---"
+
+          find . \
             -type f \
-            -path '*toolchain*' \
             \( \
-              -name '.prepared*' \
-              -o -name '.configured*' \
-              -o -name '.built*' \
-              -o -name '*.stamp' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 800
-
-          echo
-          echo "--- GCC RUNTIME OBJECTS / LIBRARIES ---"
-
-          find staging_dir build_dir \
-            -type f \
-            \( \
-              -name 'libgcc*.a' \
-              -o -name 'libgcc*.so*' \
-              -o -name 'crtbegin*.o' \
-              -o -name 'crtend*.o' \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
             \) \
             -print \
             2>/dev/null \
@@ -727,363 +390,262 @@ jobs:
             | head -n 1000
 
           echo
-          echo "--- TOOLCHAIN DIRECTORY SIZE ---"
+          echo "--- SYMLINKS NAMED libgcc_s.so* ---"
 
-          du -sh \
-            staging_dir/toolchain-* \
+          find . \
+            -type l \
+            -name 'libgcc_s.so*' \
+            -print \
             2>/dev/null \
-            || true
+            | sort \
+            | head -n 500
 
           echo
-          echo "========================================"
-          echo "=== TOOLCHAIN STAGING DIAGNOSTIC DONE ==="
-          echo "========================================"
+          echo "--- TOOLCHAIN DIRECTORIES ---"
 
-      # ================================================================
-      # 5F. Inspect exact libgcc package rule
-      #
-      # ADDED TEST STEP ONLY.
-      #
-      # DIAGNOSTIC ONLY.
-      # ================================================================
-      - name: Inspect exact libgcc package rule
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== INSPECT EXACT LIBGCC PACKAGE RULE ==="
-          echo "========================================"
-
-          TOOLCHAIN_MAKEFILE="package/libs/toolchain/Makefile"
-
-          test -f "$TOOLCHAIN_MAKEFILE"
-
-          echo "--- MAKEFILE LINE NUMBERS ---"
-
-          nl -ba "$TOOLCHAIN_MAKEFILE" \
-            | sed -n '730,830p'
-
-          echo
-          echo "--- LIBGCC REFERENCES ---"
-
-          grep -n -A30 -B30 \
-            'libgcc_s\.so' \
-            "$TOOLCHAIN_MAKEFILE" \
-            || true
-
-          echo
-          echo "--- LIBGCC PACKAGE DEFINITIONS ---"
-
-          grep -n -A60 -B20 \
-            'define Package/libgcc' \
-            "$TOOLCHAIN_MAKEFILE" \
-            || true
-
-          echo
-          echo "--- TOOLCHAIN VARIABLES ---"
-
-          grep -nE \
-            'TOOLCHAIN_DIR|GCC_VERSION|GCC_DIR|LIBGCC' \
-            "$TOOLCHAIN_MAKEFILE" \
-            | head -n 300 \
-            || true
-
-          echo
-          echo "========================================"
-          echo "=== LIBGCC RULE INSPECTION COMPLETE ==="
-          echo "========================================"
-
-      # ================================================================
-      # 6. Inspect Sing-box metadata
-      # ================================================================
-      - name: Inspect Sing-box metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== INSPECT SING-BOX METADATA ==="
-          echo "========================================"
-
-          echo "--- PACKAGE INFO ---"
-
-          grep -n -A30 -B5 \
-            "Source-Makefile: package/openwrt-passwall-packages/sing-box/Makefile" \
-            tmp/.packageinfo || true
-
-          echo
-          echo "--- PACKAGE DEPENDENCIES ---"
-
-          grep -n \
-            "sing-box" \
-            tmp/.packagedeps \
-            | head -n 50 || true
-
-          echo
-          echo "--- CONFIG ---"
-
-          grep -n \
-            '^CONFIG_PACKAGE_sing-box=' \
-            .config || true
-
-      # ================================================================
-      # 7. Build OpenWrt host Ninja
-      # ================================================================
-      - name: Build OpenWrt host Ninja
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== BUILD OPENWRT HOST NINJA ==="
-          echo "========================================"
-
-          echo "--- SYSTEM NINJA ---"
-
-          if command -v ninja >/dev/null 2>&1; then
-            command -v ninja
-            ninja --version
-          else
-            echo "System ninja: NOT FOUND"
-          fi
-
-          echo
-          echo "--- OPENWRT STAGING NINJA BEFORE BUILD ---"
-
-          if [ -x staging_dir/host/bin/ninja ]; then
-            staging_dir/host/bin/ninja --version
-          else
-            echo "OpenWrt staging ninja: NOT FOUND"
-          fi
-
-          echo
-          echo "--- BUILD OPENWRT NINJA ---"
-
-          make tools/ninja/compile V=s -j1
-
-          echo
-          echo "--- VERIFY OPENWRT STAGING NINJA ---"
-
-          test -x staging_dir/host/bin/ninja
-
-          staging_dir/host/bin/ninja --version
-
-          echo
-          echo "Ninja path:"
-          readlink -f staging_dir/host/bin/ninja
-
-      # ================================================================
-      # 8. Build OpenWrt host Meson
-      # ================================================================
-      - name: Build OpenWrt host Meson
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== BUILD OPENWRT HOST MESON ==="
-          echo "========================================"
-
-          make tools/meson/compile V=s -j1
-
-          echo
-          echo "--- VERIFY OPENWRT STAGING MESON ---"
-
-          test -f staging_dir/host/bin/meson.py
-          test -x staging_dir/host/bin/meson.py
-
-          staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "Meson path:"
-          readlink -f staging_dir/host/bin/meson.py
-
-      # ================================================================
-      # 9. Verify APK host Meson Ninja
-      # ================================================================
-      - name: Verify APK host Meson Ninja
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== VERIFY APK HOST MESON/NINJA ==="
-          echo "========================================"
-
-          echo "--- NINJA ---"
-
-          test -x staging_dir/host/bin/ninja
-          staging_dir/host/bin/ninja --version
-
-          echo
-          echo "--- MESON ---"
-
-          test -x staging_dir/host/bin/meson.py
-          staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "--- APK HOST TARGET ---"
-
-          make package/system/apk/host/compile V=s -j1
-
-          echo
-          echo "APK host compile: PASS"
-
-      # ================================================================
-      # 10. Locate OpenSSL host dependency
-      #
-      # IMPORTANT:
-      # We do NOT guess a target.
-      # We only inspect the actual source tree.
-      # ================================================================
-      - name: Locate OpenSSL host dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== LOCATE OPENSSL HOST DEPENDENCY ==="
-          echo "========================================"
-
-          echo "--- STAGING OPENSSL ---"
-
-          if [ -x staging_dir/host/bin/openssl ]; then
-            echo "FOUND:"
-            readlink -f staging_dir/host/bin/openssl
-            staging_dir/host/bin/openssl version
-          else
-            echo "staging_dir/host/bin/openssl: NOT FOUND"
-          fi
-
-          echo
-          echo "--- PACKAGE MAKEFILE REFERENCES ---"
-
-          grep -RniE \
-            'STAGING_DIR_HOST.*openssl|BUILD_KEY_APK_SEC|BUILD_KEY_APK_PUB' \
-            package \
-            --exclude-dir=.git \
-            | head -n 200 || true
-
-          echo
-          echo "--- INCLUDE REFERENCES ---"
-
-          grep -RniE \
-            'STAGING_DIR_HOST.*openssl|OPENSSL_DIR|libcrypto|libssl' \
-            include \
-            --exclude-dir=.git \
-            | head -n 300 || true
-
-          echo
-          echo "--- TOOLS REFERENCES ---"
-
-          grep -RniE \
-            'STAGING_DIR_HOST.*openssl|OPENSSL_DIR|libcrypto|libssl' \
-            tools \
-            --exclude-dir=.git \
-            | head -n 300 || true
-
-          echo
-          echo "--- OPENSSL DIRECTORIES ---"
-
-          find tools package \
-            -maxdepth 5 \
+          find staging_dir \
+            -maxdepth 3 \
             -type d \
+            -name 'toolchain-*' \
+            -print \
+            2>/dev/null \
+            | sort
+
+      # ================================================================
+      # 12. Inspect exact expected TOOLCHAIN_DIR
+      # ================================================================
+      - name: Inspect exact TOOLCHAIN_DIR contents
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== EXACT TOOLCHAIN_DIR INSPECTION ==="
+          echo "========================================"
+
+          GCC_VERSION="14.4.0"
+
+          EXPECTED_PREFIX="staging_dir/toolchain-aarch64_cortex-a53_gcc-${GCC_VERSION}_musl"
+
+          echo "Expected TOOLCHAIN_DIR:"
+          echo "$EXPECTED_PREFIX"
+
+          echo
+          echo "--- DIRECTORY ---"
+
+          if [ -d "$EXPECTED_PREFIX" ]; then
+            echo "FOUND"
+            ls -lad "$EXPECTED_PREFIX"
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo
+          echo "--- lib/ ---"
+
+          if [ -d "$EXPECTED_PREFIX/lib" ]; then
+            ls -lah "$EXPECTED_PREFIX/lib"
+          else
+            echo "lib directory: NOT FOUND"
+          fi
+
+          echo
+          echo "--- usr/lib/ ---"
+
+          if [ -d "$EXPECTED_PREFIX/usr/lib" ]; then
+            ls -lah "$EXPECTED_PREFIX/usr/lib"
+          else
+            echo "usr/lib directory: NOT FOUND"
+          fi
+
+          echo
+          echo "--- gcc/ ---"
+
+          if [ -d "$EXPECTED_PREFIX/lib/gcc" ]; then
+            find "$EXPECTED_PREFIX/lib/gcc" \
+              -maxdepth 5 \
+              -print \
+              | sort \
+              | head -n 1000
+          else
+            echo "$EXPECTED_PREFIX/lib/gcc: NOT FOUND"
+          fi
+
+      # ================================================================
+      # 13. Search entire staging_dir for GCC runtime
+      # ================================================================
+      - name: Search staging_dir for GCC runtime
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== SEARCH STAGING_DIR FOR GCC RUNTIME ==="
+          echo "========================================"
+
+          echo "--- libgcc_s.so ---"
+
+          find staging_dir \
+            -type f \
             \( \
-              -iname '*openssl*' \
-              -o -iname '*libssl*' \
-              -o -iname '*libcrypto*' \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
             \) \
             -print \
-            | sort \
-            | head -n 300
+            2>/dev/null \
+            | sort
 
           echo
-          echo "--- OPENSSL MAKEFILES ---"
+          echo "--- GCC LIBGCC FILES ---"
 
-          find tools package \
+          find staging_dir \
             -type f \
-            -name Makefile \
+            \( \
+              -name 'libgcc.a' \
+              -o -name 'libgcc_pic.a' \
+              -o -name 'libgcc.map' \
+            \) \
             -print \
-            | while read -r mf; do
-                if grep -qiE \
-                  'openssl|libcrypto|libssl' \
-                  "$mf" 2>/dev/null
-                then
-                  echo "$mf"
-                fi
-              done \
+            2>/dev/null \
             | sort \
-            | head -n 300
-
-      # ================================================================
-      # 11. Inspect APK signing key rule
-      # ================================================================
-      - name: Inspect APK signing key rule
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== INSPECT APK SIGNING KEY RULE ==="
-          echo "========================================"
-
-          echo "--- package/Makefile ---"
-
-          nl -ba package/Makefile \
-            | sed -n '45,80p'
+            | head -n 1000
 
           echo
-          echo "--- BUILD KEY REFERENCES ---"
+          echo "--- ALL GCC DIRECTORIES ---"
 
-          grep -Rni \
-            'BUILD_KEY_APK_' \
-            package include \
-            --exclude-dir=.git \
-            | head -n 100 || true
+          find staging_dir \
+            -type d \
+            -path '*/lib/gcc/*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500
 
       # ================================================================
-      # 12. Inspect host dependency infrastructure
+      # 14. Inspect toolchain build state
       # ================================================================
-      - name: Inspect host dependency infrastructure
+      - name: Inspect toolchain build state
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           echo "========================================"
-          echo "=== INSPECT HOST DEPENDENCY SYSTEM ==="
+          echo "=== TOOLCHAIN BUILD STATE ==="
           echo "========================================"
 
-          echo "--- HOST BUILD REFERENCES ---"
+          echo "--- BUILD_DIR TOOLCHAIN ---"
 
-          grep -RniE \
-            'HOST_BUILD|Build/Host|Host/Compile|STAGING_DIR_HOST' \
-            include \
-            --exclude-dir=.git \
-            | head -n 400 || true
+          find build_dir/target-aarch64_cortex-a53_musl \
+            -maxdepth 5 \
+            -print \
+            2>/dev/null \
+            | grep '/toolchain' \
+            | sort \
+            | head -n 1000 || true
 
           echo
-          echo "--- HOST TOOL INSTALL REFERENCES ---"
+          echo "--- TOOLCHAIN STAMPS ---"
 
-          grep -RniE \
-            'INSTALL_BIN.*STAGING_DIR_HOST|STAGING_DIR_HOST.*/bin/' \
-            include tools package \
-            --exclude-dir=.git \
+          find build_dir/target-aarch64_cortex-a53_musl/toolchain \
+            -maxdepth 2 \
+            -type f \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
+
+          echo
+          echo "--- STAGING TOOLCHAIN STAMPS ---"
+
+          find staging_dir \
+            -type f \
+            -name '*.installed' \
+            -o -name '*.built' \
+            -o -name '*.configured*' \
+            2>/dev/null \
+            | grep -i toolchain \
+            | sort \
             | head -n 500 || true
 
       # ================================================================
-      # 13. State report before real build
+      # 15. Inspect GCC compiler sysroot / runtime search paths
       # ================================================================
-      - name: State report
+      - name: Inspect GCC runtime search paths
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
 
           echo "========================================"
-          echo "=== CURRENT BUILD STATE ==="
+          echo "=== GCC RUNTIME SEARCH PATHS ==="
+          echo "========================================"
+
+          if command -v aarch64-openwrt-linux-musl-gcc >/dev/null 2>&1; then
+
+            echo "--- GCC VERSION ---"
+            aarch64-openwrt-linux-musl-gcc --version | head -n 5
+
+            echo
+            echo "--- GCC PRINT SYSROOT ---"
+            aarch64-openwrt-linux-musl-gcc -print-sysroot
+
+            echo
+            echo "--- GCC PRINT SEARCH DIRS ---"
+            aarch64-openwrt-linux-musl-gcc \
+              -print-search-dirs \
+              | head -n 100
+
+            echo
+            echo "--- GCC PRINT FILE NAME ---"
+            aarch64-openwrt-linux-musl-gcc \
+              -print-file-name=libgcc_s.so
+
+            echo
+            echo "--- GCC PRINT FILE NAME: libgcc.a ---"
+            aarch64-openwrt-linux-musl-gcc \
+              -print-file-name=libgcc.a
+
+          else
+            echo "aarch64-openwrt-linux-musl-gcc: NOT FOUND"
+          fi
+
+      # ================================================================
+      # 16. Inspect final relevant Makefile section
+      # ================================================================
+      - name: Inspect libgcc Makefile logic
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== LIBGCC MAKEFILE LOGIC ==="
+          echo "========================================"
+
+          nl -ba package/libs/toolchain/Makefile \
+            | sed -n '450,530p'
+
+          echo
+          echo "--- GCC CONFIG ---"
+
+          nl -ba package/libs/toolchain/Makefile \
+            | grep -n \
+              'CONFIG_GCC_VERSION' \
+            | head -n 20 || true
+
+      # ================================================================
+      # 17. Final diagnosis summary
+      # ================================================================
+      - name: Final diagnosis summary
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== FINAL LIBGCC_S.SO DIAGNOSIS ==="
           echo "========================================"
 
           echo
+          echo "--- COMMITS ---"
+
           echo "ImmortalWrt:"
           git rev-parse HEAD
 
@@ -1092,177 +654,43 @@ jobs:
           git -C package/openwrt-passwall-packages rev-parse HEAD
 
           echo
-          echo "Sing-box:"
-          grep '^PKG_NAME:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
+          echo "--- EXPECTED TOOLCHAIN ---"
 
-          grep '^PKG_VERSION:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
+          EXPECTED="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
 
-          grep '^PKG_RELEASE:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
+          echo "$EXPECTED"
 
-          echo
-          echo "Ninja:"
-          staging_dir/host/bin/ninja --version
-
-          echo
-          echo "Meson:"
-          staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "OpenSSL:"
-
-          if [ -x staging_dir/host/bin/openssl ]; then
-            staging_dir/host/bin/openssl version
+          if [ -d "$EXPECTED" ]; then
+            echo "TOOLCHAIN_DIR: FOUND"
           else
-            echo "NOT FOUND"
+            echo "TOOLCHAIN_DIR: NOT FOUND"
           fi
 
           echo
-          echo "Expected libgcc_s.so:"
+          echo "--- EXPECTED libgcc_s.so ---"
 
-          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
-
-          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
-            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
+          if compgen -G "$EXPECTED/lib/libgcc_s.so.*" > /dev/null 2>&1; then
+            echo "libgcc_s.so: FOUND"
+            ls -lah "$EXPECTED"/lib/libgcc_s.so.*
           else
-            echo "NOT FOUND"
-          fi
-
-      # ================================================================
-      # 14. REAL SING-BOX COMPILE TEST
-      # ================================================================
-      - name: Real Sing-box compile test
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== REAL SING-BOX COMPILE TEST ==="
-          echo "========================================"
-
-          echo
-          echo "--- VERIFY STAGING NINJA ---"
-
-          test -x staging_dir/host/bin/ninja
-          staging_dir/host/bin/ninja --version
-
-          echo
-          echo "--- VERIFY STAGING MESON ---"
-
-          test -x staging_dir/host/bin/meson.py
-          staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "--- VERIFY STAGING OPENSSL ---"
-
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
-
-          echo
-          echo "--- VERIFY EXPECTED LIBGCC ---"
-
-          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
-
-          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
-            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
-          else
-            echo "Expected libgcc_s.so is NOT present."
+            echo "libgcc_s.so: NOT FOUND"
           fi
 
           echo
-          echo "--- VERIFY SING-BOX MAKEFILE ---"
+          echo "--- ALL libgcc_s.so FOUND IN TREE ---"
 
-          SINGBOX_MAKEFILE="package/openwrt-passwall-packages/sing-box/Makefile"
-
-          test -f "$SINGBOX_MAKEFILE"
-
-          grep '^PKG_NAME:=' \
-            "$SINGBOX_MAKEFILE"
-
-          grep '^PKG_VERSION:=' \
-            "$SINGBOX_MAKEFILE"
-
-          grep '^PKG_RELEASE:=' \
-            "$SINGBOX_MAKEFILE"
-
-          echo
-          echo "--- REAL TARGET ---"
-          echo "package/sing-box/compile"
+          find . \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500
 
           echo
           echo "========================================"
-          echo "=== START SING-BOX BUILD ==="
-          echo "========================================"
-
-          make package/sing-box/compile V=s -j1
-
-          echo
-          echo "========================================"
-          echo "=== SING-BOX COMPILE: PASS ==="
-          echo "========================================"
-
-      # ================================================================
-      # 15. Final audit
-      # ================================================================
-      - name: Final audit
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== FINAL AUDIT ==="
-          echo "========================================"
-
-          echo
-          echo "ImmortalWrt:"
-          git rev-parse HEAD
-
-          echo
-          echo "PassWall-Packages:"
-          git -C package/openwrt-passwall-packages rev-parse HEAD
-
-          echo
-          echo "Sing-box:"
-          grep '^PKG_NAME:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
-
-          grep '^PKG_VERSION:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
-
-          grep '^PKG_RELEASE:=' \
-            package/openwrt-passwall-packages/sing-box/Makefile
-
-          echo
-          echo "OpenWrt staging Ninja:"
-          staging_dir/host/bin/ninja --version
-
-          echo
-          echo "OpenWrt staging Meson:"
-          staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "OpenWrt staging OpenSSL:"
-
-          if [ -x staging_dir/host/bin/openssl ]; then
-            staging_dir/host/bin/openssl version
-          else
-            echo "NOT FOUND"
-          fi
-
-          echo
-          echo "Expected libgcc_s.so:"
-
-          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
-
-          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
-            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
-          else
-            echo "NOT FOUND"
-          fi
-
-          echo
-          echo "========================================"
-          echo "RESULT: PASS"
+          echo "=== DIAGNOSTIC TEST COMPLETE ==="
           echo "========================================"
