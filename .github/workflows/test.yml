@@ -16,8 +16,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: immortalwrt/immortalwrt
-          ref: d2dc130d7f8341741df04ea04f5fd4c74dcc447d7
-          fetch-depth: 1
+          ref: master
+          fetch-depth: 0
+
+      - name: Checkout exact ImmortalWrt commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMMORTALWRT_COMMIT="d2dc130d7f8341741df04ea04f5fd4c74dcc447d7"
+
+          echo "========================================"
+          echo "=== CHECKOUT EXACT IMMORTALWRT COMMIT ==="
+          echo "========================================"
+
+          git fetch origin "$IMMORTALWRT_COMMIT"
+
+          git checkout --detach "$IMMORTALWRT_COMMIT"
+
+          echo
+          echo "Actual HEAD:"
+          git rev-parse HEAD
+
+          test "$(git rev-parse HEAD)" = "$IMMORTALWRT_COMMIT"
+
+          echo
+          echo "OK: exact ImmortalWrt commit verified."
 
       # ================================================================
       # 2. Clone PassWall-Packages
