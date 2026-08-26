@@ -390,6 +390,219 @@ jobs:
           echo "========================================"
 
       # ================================================================
+      # 5D. Diagnose libgcc_s.so / Toolchain Runtime
+      #
+      # ADDED TEST STEP ONLY.
+      #
+      # IMPORTANT:
+      # This step is DIAGNOSTIC ONLY.
+      #
+      # Do NOT modify OpenWrt source files.
+      # Do NOT modify package Makefiles.
+      # Do NOT create or copy libgcc_s.so.
+      # Do NOT run a toolchain repair.
+      #
+      # The purpose is to locate the expected libgcc_s.so,
+      # identify the active GCC toolchain,
+      # and determine why package/libs/toolchain cannot find it.
+      # ================================================================
+      - name: Diagnose libgcc_s.so Toolchain Runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== DIAGNOSE LIBGCC_S.SO ==="
+          echo "========================================"
+
+          echo
+          echo "--- TARGET / TOOLCHAIN CONFIG ---"
+
+          echo "Target:"
+          grep -E \
+            '^(CONFIG_TARGET_ARCH_PACKAGES|CONFIG_TARGET_BOARD|CONFIG_TARGET_SUBTARGET|CONFIG_ARCH|CONFIG_USE_MUSL)=' \
+            .config \
+            2>/dev/null || true
+
+          echo
+          echo "--- GCC CONFIG ---"
+
+          grep -E \
+            '^(CONFIG_GCC_VERSION|CONFIG_TOOLCHAINOPTS|CONFIG_EXTERNAL_TOOLCHAIN)=' \
+            .config \
+            2>/dev/null || true
+
+          echo
+          echo "--- STAGING TOOLCHAIN DIRECTORIES ---"
+
+          find staging_dir \
+            -maxdepth 2 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            2>/dev/null \
+            | sort
+
+          echo
+          echo "--- EXPECTED TOOLCHAIN LIB DIRECTORIES ---"
+
+          for dir in staging_dir/toolchain-*; do
+            if [ -d "$dir" ]; then
+              echo
+              echo ">>> $dir"
+              ls -la "$dir" || true
+
+              if [ -d "$dir/lib" ]; then
+                echo "--- $dir/lib ---"
+                ls -la "$dir/lib" || true
+              else
+                echo "--- $dir/lib: NOT FOUND ---"
+              fi
+            fi
+          done
+
+          echo
+          echo "--- ALL libgcc_s.so FILES IN STAGING ---"
+
+          find staging_dir \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort || true
+
+          echo
+          echo "--- ALL libgcc FILES IN BUILD_DIR ---"
+
+          find build_dir \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 300 || true
+
+          echo
+          echo "--- TOOLCHAIN GCC BINARIES ---"
+
+          find staging_dir \
+            -type f \
+            \( \
+              -name '*gcc' \
+              -o -name '*gcc-*' \
+            \) \
+            -executable \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 200 || true
+
+          echo
+          echo "--- SYSTEM GCC ---"
+
+          if command -v gcc >/dev/null 2>&1; then
+            command -v gcc
+            gcc --version | head -n 5
+          else
+            echo "System GCC: NOT FOUND"
+          fi
+
+          echo
+          echo "--- OPENWRT TOOLCHAIN MAKEFILE ---"
+
+          if [ -f package/libs/toolchain/Makefile ]; then
+            grep -n -E \
+              'libgcc|GCC|toolchain|STAGING_DIR_TOOLCHAIN|STAGING_DIR' \
+              package/libs/toolchain/Makefile \
+              | head -n 300 || true
+          else
+            echo "package/libs/toolchain/Makefile: NOT FOUND"
+          fi
+
+          echo
+          echo "--- LIBGCC INSTALL RULE ---"
+
+          if [ -f package/libs/toolchain/Makefile ]; then
+            nl -ba package/libs/toolchain/Makefile \
+              | sed -n '740,820p'
+          fi
+
+          echo
+          echo "--- TOOLCHAIN STAMP FILES ---"
+
+          find staging_dir build_dir \
+            -type f \
+            \( \
+              -name '*toolchain*' \
+              -o -name '.configured_*' \
+              -o -name '.built*' \
+              -o -name '*.stamp' \
+            \) \
+            -print \
+            2>/dev/null \
+            | grep -E \
+              'toolchain|gcc|libgcc' \
+            | head -n 300 || true
+
+          echo
+          echo "--- TOOLCHAIN DIRECTORY STATUS ---"
+
+          for dir in staging_dir/toolchain-*; do
+            if [ -d "$dir" ]; then
+              echo
+              echo ">>> $dir"
+
+              echo "Directory:"
+              readlink -f "$dir" || true
+
+              echo
+              echo "Contents:"
+              find "$dir" \
+                -maxdepth 2 \
+                -type f \
+                -print \
+                2>/dev/null \
+                | sort \
+                | head -n 300 || true
+            fi
+          done
+
+          echo
+          echo "--- LIBGCC SEARCH UNDER ENTIRE WORKSPACE ---"
+
+          find . \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
+            -not -path './.git/*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
+
+          echo
+          echo "--- TOOLCHAIN TARGET DIRECTORY REFERENCED BY PACKAGE MAKEFILE ---"
+
+          grep -n \
+            'STAGING_DIR_TOOLCHAIN' \
+            package/libs/toolchain/Makefile \
+            2>/dev/null \
+            | head -n 100 || true
+
+          echo
+          echo "========================================"
+          echo "=== LIBGCC_S.SO DIAGNOSIS COMPLETE ==="
+          echo "========================================"
+
+      # ================================================================
       # 6. Inspect Sing-box metadata
       # ================================================================
       - name: Inspect Sing-box metadata
