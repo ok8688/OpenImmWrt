@@ -1,39 +1,212 @@
-name: SNAPSHOT sing-box target diagnostic
+name: Test Upstream Golang + sing-box Build
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  diagnose:
+  singbox-audit:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Diagnose sing-box
-        shell: bash
+      - name: Install Build Dependencies
         run: |
           set -e
 
-          git clone --depth=1 -b master \
-            https://github.com/immortalwrt/immortalwrt.git openwrt
+          sudo apt-get update -qq
+
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            flex \
+            bison \
+            g++ \
+            gawk \
+            gcc-multilib \
+            gettext \
+            git \
+            libncurses5-dev \
+            libssl-dev \
+            rsync \
+            unzip \
+            zlib1g-dev \
+            file \
+            wget \
+            jq \
+            golang-go \
+            python3-setuptools
+
+      - name: Clone ImmortalWrt + PassWall-Packages
+        run: |
+          set -e
+
+          echo "=== CLONE IMMORTALWRT ==="
+
+          git clone \
+            --depth=1 \
+            -b master \
+            https://github.com/immortalwrt/immortalwrt.git \
+            openwrt
 
           cd openwrt
 
-          git clone --depth=1 \
+          echo "=== UPDATE BASE FEEDS ==="
+
+          ./scripts/feeds update -a
+
+          echo "=== CLONE PASSWALL-PACKAGES ==="
+
+          git clone \
+            --depth=1 \
             https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
             package/openwrt-passwall-packages
 
-          echo "=== MAKEFILE ==="
-          test -f package/openwrt-passwall-packages/sing-box/Makefile
-          grep -E '^(PKG_NAME|PKG_VERSION|PKG_SOURCE|GO_PKG)' \
+          echo "=== INSTALL FEEDS ==="
+
+          ./scripts/feeds install -a -f
+
+      - name: Show Sing-box Source
+        run: |
+          set -e
+
+          cd openwrt
+
+          echo "=== COMMITS ==="
+
+          echo "ImmortalWrt: $(git rev-parse HEAD)"
+
+          echo "PassWall-Packages: $(git -C package/openwrt-passwall-packages rev-parse HEAD)"
+
+          echo "=== SING-BOX MAKEFILE ==="
+
+          sed -n '1,160p' \
             package/openwrt-passwall-packages/sing-box/Makefile
 
-          echo "=== DUMPINFO ==="
-          make package/openwrt-passwall-packages/sing-box/dumpinfo 2>&1 | head -20 || true
+          echo "=== GO ==="
 
-          echo "=== TARGET ==="
-          make package/openwrt-passwall-packages/sing-box/compile -n 2>&1 | head -20 || true
+          command -v go
+          go version
 
-          echo "=== DONE ==="
+          echo "=== GCC ==="
+
+          gcc --version | head -n 1
+
+          echo "=== LIBGCC ==="
+
+          gcc -print-libgcc-file-name
+
+      - name: Generate Test Config
+        run: |
+          set -e
+
+          cd openwrt
+
+          cat > .config << 'EOF'
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=1536
+          CONFIG_TARGET_IMAGES_GZIP=y
+
+          CONFIG_USE_APK=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_sing-box=y
+          EOF
+
+          echo "=== BEFORE DEFCONFIG ==="
+
+          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
+
+          echo "=== DEFCONFIG ==="
+
+          make defconfig
+
+          echo "=== AFTER DEFCONFIG ==="
+
+          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
+
+      - name: SING-BOX TARGET AUDIT
+        run: |
+          set -e
+
+          cd openwrt
+
+          echo
+          echo "========================================"
+          echo "=== SING-BOX TARGET AUDIT ==="
+          echo "========================================"
+
+          echo
+          echo "--- package directory ---"
+
+          ls -la package/openwrt-passwall-packages/sing-box/
+
+          echo
+          echo "--- Makefile ---"
+
+          sed -n '1,120p' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+          echo
+          echo "--- package/sing-box/compile ---"
+
+          set +e
+
+          make package/sing-box/compile V=s -n \
+            > /tmp/singbox-package-target.log 2>&1
+
+          RET1=$?
+
+          tail -n 100 /tmp/singbox-package-target.log
+
+          echo "RETURN_CODE=$RET1"
+
+          echo
+          echo "--- package/openwrt-passwall-packages/sing-box/compile ---"
+
+          make package/openwrt-passwall-packages/sing-box/compile V=s -n \
+            > /tmp/singbox-path-target.log 2>&1
+
+          RET2=$?
+
+          tail -n 100 /tmp/singbox-path-target.log
+
+          echo "RETURN_CODE=$RET2"
+
+          set -e
+
+          echo
+          echo "--- generated package info ---"
+
+          grep -Rni "sing-box" \
+            tmp/.packageinfo* \
+            tmp/.packagedeps \
+            2>/dev/null \
+            | head -n 100 || true
+
+          echo
+          echo "--- package metadata direct check ---"
+
+          make package/openwrt-passwall-packages/sing-box/dumpinfo \
+            V=s \
+            2>&1 \
+            | tail -n 100 || true
+
+          echo
+          echo "--- config ---"
+
+          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
+
+          echo
+          echo "========================================"
+          echo "=== AUDIT COMPLETE ==="
+          echo "========================================"
+
+          exit 0
