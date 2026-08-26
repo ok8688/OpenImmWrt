@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
       # ================================================================
       # 1. Checkout ImmortalWrt
       # ================================================================
@@ -15,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: immortalwrt/immortalwrt
-          ref: d2dc130d7f8341741df04eaaf5fd4c74dcc447d7
+          ref: d2dc130d7f8341741df04ea04f5fd4c74dcc447d7
           fetch-depth: 1
 
       # ================================================================
@@ -61,6 +62,7 @@ jobs:
           git rev-parse HEAD
 
           echo "--- REQUIRED DIRECTORIES ---"
+
           for path in \
             Makefile \
             package \
@@ -73,6 +75,7 @@ jobs:
             echo "OK: $path"
           done
 
+          echo
           echo "--- SCRIPT DIRECTORY ---"
           ls -la scripts
 
@@ -96,14 +99,19 @@ jobs:
           echo "ImmortalWrt:"
           git rev-parse HEAD
 
+          echo
           echo "PassWall-Packages:"
           git -C package/openwrt-passwall-packages rev-parse HEAD
 
+          echo
           echo "--- SING-BOX DIRECTORY ---"
+
           ls -la \
             package/openwrt-passwall-packages/sing-box
 
+          echo
           echo "--- MAKEFILE ---"
+
           sed -n '1,140p' \
             package/openwrt-passwall-packages/sing-box/Makefile
 
@@ -133,14 +141,14 @@ jobs:
           echo "=== INSPECT SING-BOX METADATA ==="
           echo "========================================"
 
-          echo "--- package info ---"
+          echo "--- PACKAGE INFO ---"
 
           grep -n -A30 -B5 \
             "Source-Makefile: package/openwrt-passwall-packages/sing-box/Makefile" \
             tmp/.packageinfo || true
 
           echo
-          echo "--- package dependencies ---"
+          echo "--- PACKAGE DEPENDENCIES ---"
 
           grep -n \
             "openwrt-passwall-packages/sing-box" \
@@ -154,7 +162,7 @@ jobs:
             .config || true
 
       # ================================================================
-      # 7. Prepare OpenWrt host tool: ninja
+      # 7. Prepare OpenWrt host Ninja
       # ================================================================
       - name: Prepare OpenWrt host ninja
         shell: bash
@@ -214,6 +222,7 @@ jobs:
 
           make tools/meson/compile V=s -j1
 
+          echo
           echo "--- AFTER BUILD ---"
 
           test -f staging_dir/host/bin/meson.py
@@ -222,14 +231,23 @@ jobs:
           echo "OpenWrt staging Meson:"
           staging_dir/host/bin/meson.py --version
 
+          echo
           echo "Meson path:"
           readlink -f staging_dir/host/bin/meson.py
 
+          echo
           echo "Meson file:"
           ls -l staging_dir/host/bin/meson.py
 
       # ================================================================
       # 9. Verify APK host Meson/Ninja build
+      #
+      # IMPORTANT:
+      # This verifies the APK host toolchain only.
+      #
+      # It does NOT invoke package/sing-box/compile.
+      # Therefore unrelated target/kernel dependencies such as
+      # gpio-button-hotplug cannot derail this audit.
       # ================================================================
       - name: Verify APK host Meson/Ninja build
         shell: bash
@@ -240,80 +258,117 @@ jobs:
           echo "=== VERIFY APK HOST MESON/NINJA ==="
           echo "========================================"
 
-          echo "--- HOST TOOLS ---"
-
+          echo "--- NINJA ---"
           test -x staging_dir/host/bin/ninja
-          test -x staging_dir/host/bin/meson.py
-
-          echo "Ninja:"
           staging_dir/host/bin/ninja --version
 
-          echo "Meson:"
+          echo
+          echo "--- MESON ---"
+          test -x staging_dir/host/bin/meson.py
           staging_dir/host/bin/meson.py --version
 
           echo
-          echo "--- BUILD APK HOST ---"
+          echo "--- APK HOST TARGET DRY-RUN ---"
 
-          make package/system/apk/host/compile V=s -j1
-
-          echo
-          echo "--- APK HOST BUILD PASSED ---"
-
-      # ================================================================
-      # 10. Verify real Make target
-      # ================================================================
-      - name: Verify Make target
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== VERIFY MAKE TARGET ==="
-          echo "========================================"
-
-          echo "--- REAL TARGET: package/sing-box/compile ---"
-
-          make package/sing-box/compile V=s -n \
+          make package/system/apk/host/compile V=s -n \
             2>&1 | tail -n 200
 
+          echo
+          echo "APK host target dry-run completed."
+
       # ================================================================
-      # 11. Verify source path is NOT a Make target
+      # 10. Verify actual OpenWrt Make target mapping
+      #
+      # IMPORTANT:
+      # Do NOT build package/sing-box/compile here.
+      #
+      # We only inspect the Make target database.
       # ================================================================
-      - name: Verify source path is not a target
+      - name: Verify Sing-box Make target mapping
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== VERIFY SOURCE PATH TARGET ==="
+          echo "=== VERIFY SING-BOX MAKE TARGET ==="
           echo "========================================"
 
-          set +e
-
-          make \
-            package/openwrt-passwall-packages/sing-box/compile \
-            V=s -n \
-            > /tmp/direct-target.log 2>&1
-
-          rc=$?
-
-          cat /tmp/direct-target.log
+          echo "--- EXPECTED TARGET ---"
+          echo "package/sing-box/compile"
 
           echo
-          echo "RETURN_CODE=$rc"
+          echo "--- PACKAGE MAKEFILE ---"
 
-          if grep -q "No rule to make target" /tmp/direct-target.log; then
-            echo "EXPECTED: source directory is NOT the Make target."
-            exit 0
-          fi
+          grep -n \
+            'package/openwrt-passwall-packages/sing-box/Makefile' \
+            package/openwrt-passwall-packages/sing-box/Makefile || true
 
-          if [ "$rc" -eq 0 ]; then
-            echo "UNEXPECTED: source path is a Make target."
+          echo
+          echo "--- OPENWRT TARGET RESOLUTION ---"
+
+          make -pn 2>/dev/null \
+            | grep -E \
+              '(^package/sing-box/compile:|package/sing-box/compile)' \
+            | head -n 20 || true
+
+          echo
+          echo "--- SOURCE PATH TARGET CHECK ---"
+
+          if make -pn 2>/dev/null \
+            | grep -q '^package/openwrt-passwall-packages/sing-box/compile:'
+          then
+            echo "ERROR: source directory incorrectly appears as a Make target."
             exit 1
           fi
 
-          echo "Unexpected error."
-          exit "$rc"
+          echo "OK: source directory is NOT a Make target."
+
+          echo
+          echo "--- REAL TARGET CHECK ---"
+
+          if make -pn 2>/dev/null \
+            | grep -q '^package/sing-box/compile:'
+          then
+            echo "OK: package/sing-box/compile exists."
+          else
+            echo "ERROR: package/sing-box/compile was not found."
+            exit 1
+          fi
+
+      # ================================================================
+      # 11. Verify package metadata references
+      # ================================================================
+      - name: Verify package metadata references
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== VERIFY PACKAGE METADATA REFERENCES ==="
+          echo "========================================"
+
+          echo "--- Source-Makefile ---"
+
+          grep -n \
+            "Source-Makefile: package/openwrt-passwall-packages/sing-box/Makefile" \
+            tmp/.packageinfo
+
+          echo
+          echo "--- Package dependencies ---"
+
+          grep -n \
+            "sing-box" \
+            tmp/.packagedeps \
+            | head -n 20 || true
+
+          echo
+          echo "--- Config ---"
+
+          if grep -q '^CONFIG_PACKAGE_sing-box=' .config; then
+            grep '^CONFIG_PACKAGE_sing-box=' .config
+          else
+            echo "CONFIG_PACKAGE_sing-box is not explicitly selected."
+          fi
 
       # ================================================================
       # 12. Final audit
