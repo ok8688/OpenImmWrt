@@ -170,15 +170,25 @@ jobs:
             .config || true
 
       # ================================================================
-      # 7. Prepare OpenWrt host Ninja
+      # 7. Build OpenWrt host Ninja
+      #
+      # IMPORTANT:
+      # This is the known missing host dependency from the original
+      # Sing-box failure.
+      #
+      # Expected:
+      #
+      # staging_dir/host/bin/ninja
+      #
+      # must be created by OpenWrt itself.
       # ================================================================
-      - name: Prepare OpenWrt host ninja
+      - name: Build OpenWrt host Ninja
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== PREPARE OPENWRT HOST NINJA ==="
+          echo "=== BUILD OPENWRT HOST NINJA ==="
           echo "========================================"
 
           echo "--- SYSTEM NINJA ---"
@@ -253,9 +263,11 @@ jobs:
       #
       #   make package/sing-box/compile
       #
-      # because that invokes the complete package dependency graph.
+      # in this step.
       #
-      # This step only verifies the APK host tool target.
+      # This step only verifies the host dependency chain:
+      #
+      # Ninja -> Meson -> APK host
       # ================================================================
       - name: Verify APK host Meson Ninja
         shell: bash
@@ -289,9 +301,24 @@ jobs:
       # 10. Inspect Make target mapping
       #
       # IMPORTANT:
-      # This does NOT execute package/sing-box/compile.
       #
-      # It only asks GNU Make for its internal database.
+      # GNU Make may return non-zero from "make -pn" because OpenWrt's
+      # Makefile evaluation can encounter configuration/dependency
+      # conditions even though the database is still emitted.
+      #
+      # Therefore:
+      #
+      #   DO NOT use:
+      #       make -pn > "$MAKE_DB"
+      #
+      # under "set -e".
+      #
+      # We capture BOTH stdout and stderr, preserve the exit code,
+      # and inspect the generated database regardless.
+      #
+      # This step does NOT execute:
+      #
+      #   package/sing-box/compile
       # ================================================================
       - name: Verify Sing-box Make target mapping
         shell: bash
@@ -310,7 +337,21 @@ jobs:
 
           MAKE_DB="/tmp/openwrt-make-db.txt"
 
-          make -pn > "$MAKE_DB" 2>/dev/null
+          set +e
+          make -pn > "$MAKE_DB" 2>&1
+          MAKE_RC=$?
+          set -e
+
+          echo
+          echo "make -pn exit code: $MAKE_RC"
+
+          echo
+          echo "--- MAKE -PN OUTPUT SIZE ---"
+          wc -l "$MAKE_DB"
+
+          echo
+          echo "--- MAKE -PN LAST 100 LINES ---"
+          tail -n 100 "$MAKE_DB"
 
           echo
           echo "--- TARGET ENTRIES ---"
@@ -329,6 +370,14 @@ jobs:
             | head -n 20 || true
 
           echo
+          echo "--- ALL SING-BOX ENTRIES ---"
+
+          grep -n \
+            'package/sing-box' \
+            "$MAKE_DB" \
+            | head -n 50 || true
+
+          echo
           echo "--- VERIFY REAL TARGET ---"
 
           if grep -q \
@@ -337,7 +386,20 @@ jobs:
           then
             echo "OK: package/sing-box/compile exists."
           else
-            echo "ERROR: package/sing-box/compile does not exist."
+            echo "ERROR: package/sing-box/compile was not found in Make database."
+
+            echo
+            echo "--- POSSIBLE PACKAGE TARGETS ---"
+
+            grep -n \
+              'sing-box.*compile\|compile.*sing-box' \
+              "$MAKE_DB" \
+              | head -n 100 || true
+
+            echo
+            echo "NOTE:"
+            echo "The Make database generation itself returned exit code: $MAKE_RC"
+
             exit 1
           fi
 
@@ -430,6 +492,11 @@ jobs:
           echo
           echo "OpenWrt staging Meson:"
           staging_dir/host/bin/meson.py --version
+
+          echo
+          echo "APK host:"
+          test -f staging_dir/host/stamp/.apk_installed
+          echo "PASS"
 
           echo
           echo "========================================"
