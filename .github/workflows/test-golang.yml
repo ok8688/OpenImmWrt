@@ -220,17 +220,21 @@ jobs:
           echo "=== BUILD OPENWRT HOST MESON ==="
           echo "========================================"
 
-          make tools/meson/compile V=s
+          make tools/meson/compile V=s -j1
 
           echo "--- AFTER BUILD ---"
 
-          test -e staging_dir/host/bin/meson
+          test -f staging_dir/host/bin/meson.py
+          test -x staging_dir/host/bin/meson.py
 
           echo "OpenWrt staging Meson:"
-          staging_dir/host/bin/meson --version
+          staging_dir/host/bin/meson.py --version
 
           echo "Meson path:"
-          ls -l staging_dir/host/bin/meson
+          readlink -f staging_dir/host/bin/meson.py
+
+          echo "Meson file:"
+          ls -l staging_dir/host/bin/meson.py
 
       # ================================================================
       # 8. Verify OpenWrt host tools
