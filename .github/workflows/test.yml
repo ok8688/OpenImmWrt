@@ -292,7 +292,189 @@ jobs:
           echo "APK host compile: PASS"
 
       # ================================================================
-      # 10. Locate OpenSSL host dependency
+      # 10. Diagnose Toolchain libgcc_s
+      #
+      # IMPORTANT:
+      # This is DIAGNOSTIC ONLY.
+      # No files are modified.
+      # No repair is attempted.
+      # ================================================================
+      - name: Diagnose Toolchain libgcc_s
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== DIAGNOSE TOOLCHAIN LIBGCC_S ==="
+          echo "========================================"
+
+          echo
+          echo "--- TARGET ARCHITECTURE ---"
+
+          echo "ARCH:"
+          grep '^CONFIG_TARGET_ARCH_PACKAGES=' .config || true
+
+          echo
+          echo "TARGET:"
+          grep '^CONFIG_TARGET_' .config \
+            | grep -E 'TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)' \
+            | head -n 50 || true
+
+          echo
+          echo "--- TOOLCHAIN STAGING DIRECTORIES ---"
+
+          find staging_dir \
+            -maxdepth 2 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            | sort || true
+
+          echo
+          echo "--- EXPECTED LIBGCC PATHS ---"
+
+          find staging_dir \
+            -type f \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+              -o -name 'libgcc.a' \
+            \) \
+            -print \
+            | sort || true
+
+          echo
+          echo "--- LIBGCC DIRECTORY LISTING ---"
+
+          find staging_dir \
+            -type d \
+            \( \
+              -path '*/lib' \
+              -o -path '*/lib64' \
+            \) \
+            -print \
+            | while read -r dir; do
+              if find "$dir" -maxdepth 1 -name 'libgcc*' -print -quit \
+                | grep -q .
+              then
+                echo "=== $dir ==="
+                ls -la "$dir" | grep -E 'libgcc|gcc_s' || true
+              fi
+            done
+
+          echo
+          echo "--- GCC TOOLCHAIN BINARIES ---"
+
+          find staging_dir \
+            -type f \
+            \( \
+              -name '*-gcc' \
+              -o -name '*-g++' \
+              -o -name '*-gcc-ar' \
+              -o -name '*-gcc-nm' \
+              -o -name '*-gcc-ranlib' \
+            \) \
+            -print \
+            | sort \
+            | head -n 100 || true
+
+          echo
+          echo "--- SYSTEM GCC ---"
+
+          command -v gcc || true
+          gcc --version || true
+
+          command -v g++ || true
+          g++ --version || true
+
+          echo
+          echo "--- OPENWRT TOOLCHAIN STAGING NAME ---"
+
+          find staging_dir \
+            -maxdepth 1 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            | sort \
+            | while read -r tc; do
+              echo "TOOLCHAIN_DIR=$tc"
+              echo "LIB_DIR=$tc/lib"
+              if [ -d "$tc/lib" ]; then
+                ls -la "$tc/lib" | head -n 100
+              else
+                echo "lib directory: NOT FOUND"
+              fi
+            done
+
+          echo
+          echo "--- TOOLCHAIN PACKAGE MAKEFILE ---"
+
+          if [ -f package/libs/toolchain/Makefile ]; then
+            nl -ba package/libs/toolchain/Makefile \
+              | sed -n '730,820p'
+          else
+            echo "package/libs/toolchain/Makefile: NOT FOUND"
+          fi
+
+          echo
+          echo "--- LIBGCC REFERENCES IN TOOLCHAIN MAKEFILE ---"
+
+          grep -n -C 5 \
+            'libgcc_s\|libgcc.a' \
+            package/libs/toolchain/Makefile \
+            || true
+
+          echo
+          echo "--- TOOLCHAIN GCC VERSION REFERENCES ---"
+
+          grep -RniE \
+            'GCC_VERSION|GCC_RELEASE|gcc-[0-9]|toolchain-[^-]+_gcc' \
+            toolchain \
+            package/libs/toolchain \
+            --exclude-dir=.git \
+            | head -n 200 || true
+
+          echo
+          echo "--- TOOLCHAIN STAMP STATE ---"
+
+          find staging_dir \
+            -maxdepth 3 \
+            -type f \
+            \( \
+              -name '*toolchain*' \
+              -o -name '.toolchain*' \
+            \) \
+            -print \
+            | sort \
+            | head -n 200 || true
+
+          echo
+          echo "--- TOOLCHAIN DIRECTORY SUMMARY ---"
+
+          find staging_dir \
+            -maxdepth 2 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            | while read -r tc; do
+              echo
+              echo "=== $tc ==="
+              du -sh "$tc" 2>/dev/null || true
+              find "$tc" \
+                -maxdepth 2 \
+                -type d \
+                -print \
+                | sort \
+                | head -n 100
+            done
+
+          echo
+          echo "========================================"
+          echo "=== LIBGCC_S DIAGNOSIS COMPLETE ==="
+          echo "========================================"
+
+      # ================================================================
+      # 11. Locate OpenSSL host dependency
       #
       # IMPORTANT:
       # We do NOT guess a target.
@@ -378,125 +560,7 @@ jobs:
             | head -n 300
 
       # ================================================================
-      # 10.5. Repair Host OpenSSL for TEST ONLY
-      #
-      # IMPORTANT:
-      # This is a TEST-ONLY repair.
-      #
-      # Do NOT modify the ImmortalWrt OpenSSL Makefile.
-      # Do NOT modify Sing-box.
-      # Do NOT modify package/Makefile.
-      #
-      # The current fixed ImmortalWrt source expects:
-      #
-      #   staging_dir/host/bin/openssl
-      #
-      # for APK signing-key generation, but this source tree does not
-      # provide an OpenSSL HostBuild target.
-      #
-      # Therefore this test supplies the host executable from the
-      # Ubuntu runner and exposes it at the exact path expected by
-      # OpenWrt.
-      #
-      # If Sing-box subsequently compiles successfully, we have proven
-      # that the missing staging host OpenSSL is the blocking condition.
-      # ================================================================
-      - name: Repair Host OpenSSL for TEST ONLY
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== REPAIR HOST OPENSSL - TEST ONLY ==="
-          echo "========================================"
-
-          echo "--- SOURCE TREE OPENSSL HOSTBUILD CHECK ---"
-
-          if grep -nE \
-            'HostBuild|Host/Configure|Host/Compile|Host/Install' \
-            package/libs/openssl/Makefile
-          then
-            echo "WARNING: OpenSSL Makefile contains HostBuild infrastructure."
-          else
-            echo "Confirmed: OpenSSL package has no HostBuild infrastructure."
-          fi
-
-          echo
-          echo "--- UBUNTU HOST OPENSSL ---"
-
-          command -v openssl
-          readlink -f "$(command -v openssl)"
-          openssl version
-
-          echo
-          echo "--- PREVIOUS STAGING OPENSSL ---"
-
-          if [ -e staging_dir/host/bin/openssl ]; then
-            ls -l staging_dir/host/bin/openssl
-            readlink -f staging_dir/host/bin/openssl || true
-          else
-            echo "staging_dir/host/bin/openssl: NOT FOUND"
-          fi
-
-          echo
-          echo "--- CREATE EXACT OPENWRT HOST PATH ---"
-
-          mkdir -p staging_dir/host/bin
-
-          rm -f staging_dir/host/bin/openssl
-
-          ln -s "$(readlink -f "$(command -v openssl)")" \
-            staging_dir/host/bin/openssl
-
-          echo
-          echo "--- VERIFY STAGING OPENSSL ---"
-
-          test -x staging_dir/host/bin/openssl
-
-          echo "Path:"
-          readlink -f staging_dir/host/bin/openssl
-
-          echo
-          echo "Version:"
-          staging_dir/host/bin/openssl version
-
-          echo
-          echo "--- VERIFY REQUIRED EC COMMAND ---"
-
-          rm -f /tmp/test-apk-private-key.pem
-
-          staging_dir/host/bin/openssl \
-            ecparam \
-            -name prime256v1 \
-            -genkey \
-            -noout \
-            -out /tmp/test-apk-private-key.pem
-
-          test -s /tmp/test-apk-private-key.pem
-
-          echo "ECDSA key generation: PASS"
-
-          echo
-          echo "--- VERIFY PUBLIC KEY GENERATION ---"
-
-          rm -f /tmp/test-apk-public-key.pem
-
-          staging_dir/host/bin/openssl \
-            ec \
-            -in /tmp/test-apk-private-key.pem \
-            -pubout \
-            > /tmp/test-apk-public-key.pem
-
-          test -s /tmp/test-apk-public-key.pem
-
-          echo "ECDSA public key generation: PASS"
-
-          echo
-          echo "--- HOST OPENSSL REPAIR RESULT ---"
-          echo "staging_dir/host/bin/openssl: READY"
-
-      # ================================================================
-      # 11. Inspect APK signing key rule
+      # 12. Inspect APK signing key rule
       # ================================================================
       - name: Inspect APK signing key rule
         shell: bash
@@ -522,7 +586,7 @@ jobs:
             | head -n 100 || true
 
       # ================================================================
-      # 12. Inspect host dependency infrastructure
+      # 13. Inspect host dependency infrastructure
       # ================================================================
       - name: Inspect host dependency infrastructure
         shell: bash
@@ -551,7 +615,7 @@ jobs:
             | head -n 500 || true
 
       # ================================================================
-      # 13. State report before real build
+      # 14. State report before real build
       # ================================================================
       - name: State report
         shell: bash
@@ -592,11 +656,14 @@ jobs:
           echo
           echo "OpenSSL:"
 
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
+          if [ -x staging_dir/host/bin/openssl ]; then
+            staging_dir/host/bin/openssl version
+          else
+            echo "NOT FOUND"
+          fi
 
       # ================================================================
-      # 14. REAL SING-BOX COMPILE TEST
+      # 15. REAL SING-BOX COMPILE TEST
       # ================================================================
       - name: Real Sing-box compile test
         shell: bash
@@ -618,12 +685,6 @@ jobs:
 
           test -x staging_dir/host/bin/meson.py
           staging_dir/host/bin/meson.py --version
-
-          echo
-          echo "--- VERIFY STAGING OPENSSL ---"
-
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
 
           echo
           echo "--- VERIFY SING-BOX MAKEFILE ---"
@@ -658,7 +719,7 @@ jobs:
           echo "========================================"
 
       # ================================================================
-      # 15. Final audit
+      # 16. Final audit
       # ================================================================
       - name: Final audit
         shell: bash
@@ -698,8 +759,12 @@ jobs:
 
           echo
           echo "OpenWrt staging OpenSSL:"
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
+
+          if [ -x staging_dir/host/bin/openssl ]; then
+            staging_dir/host/bin/openssl version
+          else
+            echo "NOT FOUND"
+          fi
 
           echo
           echo "========================================"
