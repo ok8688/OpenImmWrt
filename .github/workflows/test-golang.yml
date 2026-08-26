@@ -3,210 +3,376 @@ name: Test Upstream Golang + sing-box Build
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  singbox-audit:
+  diagnose:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Install Build Dependencies
+      # ================================================================
+      # 1. Runner information
+      # ================================================================
+      - name: Runner Information
         run: |
-          set -e
+          set -euo pipefail
 
-          sudo apt-get update -qq
+          echo "========================================"
+          echo "=== RUNNER INFORMATION ==="
+          echo "========================================"
+
+          uname -a
+          echo
+          lsb_release -a 2>/dev/null || true
+          echo
+          nproc
+          free -h
+          df -h
+
+      # ================================================================
+      # 2. Install required host tools
+      # ================================================================
+      - name: Install Host Build Dependencies
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== INSTALL HOST BUILD DEPENDENCIES ==="
+          echo "========================================"
+
+          sudo apt-get update
 
           sudo apt-get install -y \
             build-essential \
             clang \
             flex \
             bison \
-            g++ \
             gawk \
             gcc-multilib \
+            g++-multilib \
             gettext \
             git \
             libncurses5-dev \
             libssl-dev \
+            python3-distutils \
             rsync \
             unzip \
             zlib1g-dev \
             file \
             wget \
-            jq \
-            golang-go \
-            python3-setuptools
+            curl \
+            cpio \
+            rename \
+            ninja-build
 
-      - name: Clone ImmortalWrt + PassWall-Packages
+          echo
+          echo "--- ninja ---"
+          command -v ninja
+          ninja --version
+
+          echo
+          echo "--- gcc ---"
+          gcc --version | head -n 1
+
+          echo
+          echo "--- go ---"
+          command -v go || true
+          go version || true
+
+      # ================================================================
+      # 3. Clone OpenWrt
+      # ================================================================
+      - name: Clone OpenWrt
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "=== CLONE IMMORTALWRT ==="
+          echo "========================================"
+          echo "=== CLONE OPENWRT ==="
+          echo "========================================"
 
-          git clone \
-            --depth=1 \
-            -b master \
-            https://github.com/immortalwrt/immortalwrt.git \
+          git clone --depth=1 \
+            https://github.com/ImmortalWrt/immortalwrt.git \
             openwrt
 
           cd openwrt
 
-          echo "=== UPDATE BASE FEEDS ==="
+          echo
+          echo "--- OpenWrt commit ---"
+          git rev-parse HEAD
 
-          ./scripts/feeds update -a
+          echo
+          echo "--- OpenWrt branch ---"
+          git branch --show-current
 
-          echo "=== CLONE PASSWALL-PACKAGES ==="
+      # ================================================================
+      # 4. Clone PassWall Packages
+      # ================================================================
+      - name: Clone PassWall Packages
+        run: |
+          set -euo pipefail
 
-          git clone \
-            --depth=1 \
-            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
+          cd openwrt
+
+          echo "========================================"
+          echo "=== CLONE PASSWALL PACKAGES ==="
+          echo "========================================"
+
+          git clone --depth=1 \
+            https://github.com/xiaorouji/openwrt-passwall-packages.git \
             package/openwrt-passwall-packages
 
-          echo "=== INSTALL FEEDS ==="
-
-          ./scripts/feeds install -a -f
-
-      - name: Show Sing-box Source
-        run: |
-          set -e
-
-          cd openwrt
-
-          echo "=== COMMITS ==="
-
-          echo "ImmortalWrt: $(git rev-parse HEAD)"
-
-          echo "PassWall-Packages: $(git -C package/openwrt-passwall-packages rev-parse HEAD)"
-
-          echo "=== SING-BOX MAKEFILE ==="
-
-          sed -n '1,160p' \
-            package/openwrt-passwall-packages/sing-box/Makefile
-
-          echo "=== GO ==="
-
-          command -v go
-          go version
-
-          echo "=== GCC ==="
-
-          gcc --version | head -n 1
-
-          echo "=== LIBGCC ==="
-
-          gcc -print-libgcc-file-name
-
-      - name: Generate Test Config
-        run: |
-          set -e
-
-          cd openwrt
-
-          cat > .config << 'EOF'
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=1536
-          CONFIG_TARGET_IMAGES_GZIP=y
-
-          CONFIG_USE_APK=y
-
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_sing-box=y
-          EOF
-
-          echo "=== BEFORE DEFCONFIG ==="
-
-          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
-
-          echo "=== DEFCONFIG ==="
-
-          make defconfig
-
-          echo "=== AFTER DEFCONFIG ==="
-
-          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
-
-      - name: SING-BOX TARGET AUDIT
-        run: |
-          set -e
-
-          cd openwrt
-
           echo
-          echo "========================================"
-          echo "=== SING-BOX TARGET AUDIT ==="
-          echo "========================================"
+          echo "--- PassWall-Packages commit ---"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
 
-          echo
-          echo "--- package directory ---"
+      # ================================================================
+      # 5. Show sing-box Makefile BEFORE feeds
+      # ================================================================
+      - name: Show Custom sing-box Makefile
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== CUSTOM SING-BOX MAKEFILE ==="
+          echo "========================================"
 
           ls -la package/openwrt-passwall-packages/sing-box/
 
           echo
-          echo "--- Makefile ---"
+          echo "--- version/source ---"
 
-          sed -n '1,120p' \
+          grep -nE \
+            '^PKG_NAME|^PKG_VERSION|^PKG_RELEASE|^PKG_SOURCE|^PKG_SOURCE_URL|^PKG_HASH' \
             package/openwrt-passwall-packages/sing-box/Makefile
 
+      # ================================================================
+      # 6. Update feeds
+      # ================================================================
+      - name: Update OpenWrt Feeds
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== UPDATE FEEDS ==="
+          echo "========================================"
+
+          ./scripts/feeds update -a
+
+      # ================================================================
+      # 7. Install PassWall Packages as feed
+      # ================================================================
+      - name: Install PassWall Packages Feed
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== INSTALL PASSWALL PACKAGES FEED ==="
+          echo "========================================"
+
+          ./scripts/feeds install -p openwrt-passwall-packages -a
+
+      # ================================================================
+      # 8. Inspect sing-box provider / feed resolution
+      # ================================================================
+      - name: Audit sing-box Feed Resolution
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== SING-BOX FEED RESOLUTION ==="
+          echo "========================================"
+
           echo
-          echo "--- package/sing-box/compile ---"
-
-          set +e
-
-          make package/sing-box/compile V=s -n \
-            > /tmp/singbox-package-target.log 2>&1
-
-          RET1=$?
-
-          tail -n 100 /tmp/singbox-package-target.log
-
-          echo "RETURN_CODE=$RET1"
+          echo "--- custom package ---"
+          ls -ld package/openwrt-passwall-packages/sing-box || true
 
           echo
-          echo "--- package/openwrt-passwall-packages/sing-box/compile ---"
-
-          make package/openwrt-passwall-packages/sing-box/compile V=s -n \
-            > /tmp/singbox-path-target.log 2>&1
-
-          RET2=$?
-
-          tail -n 100 /tmp/singbox-path-target.log
-
-          echo "RETURN_CODE=$RET2"
-
-          set -e
+          echo "--- package/feeds/packages/sing-box ---"
+          ls -ld package/feeds/packages/sing-box || true
 
           echo
-          echo "--- generated package info ---"
+          echo "--- package/feeds/openwrt-passwall-packages/sing-box ---"
+          ls -ld package/feeds/openwrt-passwall-packages/sing-box || true
+
+          echo
+          echo "--- readlink ---"
+          readlink -f package/feeds/packages/sing-box 2>/dev/null || true
+          readlink -f package/feeds/openwrt-passwall-packages/sing-box 2>/dev/null || true
+
+          echo
+          echo "--- packages feed sing-box version ---"
+          if [ -f package/feeds/packages/sing-box/Makefile ]; then
+            grep -nE \
+              '^PKG_NAME|^PKG_VERSION|^PKG_RELEASE|^PKG_SOURCE|^PKG_SOURCE_URL' \
+              package/feeds/packages/sing-box/Makefile
+          fi
+
+          echo
+          echo "--- PassWall sing-box version ---"
+          grep -nE \
+            '^PKG_NAME|^PKG_VERSION|^PKG_RELEASE|^PKG_SOURCE|^PKG_SOURCE_URL' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+      # ================================================================
+      # 9. Show feeds configuration
+      # ================================================================
+      - name: Show Feeds Configuration
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== FEEDS CONFIGURATION ==="
+          echo "========================================"
+
+          echo
+          echo "--- feeds.conf ---"
+          cat feeds.conf 2>/dev/null || true
+
+          echo
+          echo "--- feeds.conf.default ---"
+          cat feeds.conf.default
+
+          echo
+          echo "--- feeds list ---"
+          ./scripts/feeds list
+
+      # ================================================================
+      # 10. Generate package metadata
+      # ================================================================
+      - name: Generate Package Metadata
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== GENERATE PACKAGE METADATA ==="
+          echo "========================================"
+
+          make defconfig
+
+          echo
+          echo "--- sing-box entries ---"
 
           grep -Rni "sing-box" \
-            tmp/.packageinfo* \
+            tmp/.packageinfo \
             tmp/.packagedeps \
-            2>/dev/null \
-            | head -n 100 || true
+            2>/dev/null | head -n 200 || true
+
+      # ================================================================
+      # 11. Enable sing-box
+      # ================================================================
+      - name: Enable sing-box
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== ENABLE SING-BOX ==="
+          echo "========================================"
+
+          ./scripts/config/set CONFIG_PACKAGE_sing-box y
+
+          make defconfig
 
           echo
-          echo "--- package metadata direct check ---"
+          echo "--- CONFIG ---"
+          grep -n '^CONFIG_PACKAGE_sing-box' .config || true
 
-          make package/openwrt-passwall-packages/sing-box/dumpinfo \
-            V=s \
-            2>&1 \
-            | tail -n 100 || true
+      # ================================================================
+      # 12. Verify OpenWrt package target
+      # ================================================================
+      - name: Verify sing-box Package Target
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== VERIFY SING-BOX TARGET ==="
+          echo "========================================"
 
           echo
-          echo "--- config ---"
+          echo "--- package/sing-box ---"
+          make package/sing-box/compile V=s -n 2>&1 \
+            | tail -n 120 || true
 
+      # ================================================================
+      # 13. Inspect actual selected Makefile
+      # ================================================================
+      - name: Inspect Selected sing-box Makefile
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo "========================================"
+          echo "=== SELECTED SING-BOX MAKEFILE ==="
+          echo "========================================"
+
+          echo
+          echo "--- package/feeds/packages/sing-box ---"
+
+          if [ -f package/feeds/packages/sing-box/Makefile ]; then
+            sed -n '1,140p' package/feeds/packages/sing-box/Makefile
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo
+          echo "--- package/feeds/openwrt-passwall-packages/sing-box ---"
+
+          if [ -f package/feeds/openwrt-passwall-packages/sing-box/Makefile ]; then
+            sed -n '1,140p' \
+              package/feeds/openwrt-passwall-packages/sing-box/Makefile
+          else
+            echo "NOT FOUND"
+          fi
+
+      # ================================================================
+      # 14. Final summary
+      # ================================================================
+      - name: Final Diagnostic Summary
+        run: |
+          set -euo pipefail
+
+          cd openwrt
+
+          echo
+          echo "========================================"
+          echo "=== FINAL DIAGNOSTIC SUMMARY ==="
+          echo "========================================"
+
+          echo
+          echo "--- Ninja ---"
+          command -v ninja
+          ninja --version
+
+          echo
+          echo "--- sing-box config ---"
           grep -n '^CONFIG_PACKAGE_sing-box' .config || true
 
           echo
-          echo "========================================"
-          echo "=== AUDIT COMPLETE ==="
-          echo "========================================"
+          echo "--- package target ---"
+          grep -n "feeds/packages/sing-box" \
+            tmp/.packagedeps 2>/dev/null || true
 
-          exit 0
+          echo
+          echo "--- package metadata ---"
+          grep -n "Source-Makefile:.*sing-box" \
+            tmp/.packageinfo 2>/dev/null || true
+
+          echo
+          echo "========================================"
+          echo "=== DIAGNOSTIC TEST COMPLETE ==="
+          echo "========================================"
