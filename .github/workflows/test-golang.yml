@@ -8,6 +8,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      # ================================================================
+      # 1. Checkout ImmortalWrt
+      # ================================================================
       - name: Checkout ImmortalWrt
         uses: actions/checkout@v4
         with:
@@ -15,6 +18,9 @@ jobs:
           ref: d2dc130d7f8341741df04eaaf5fd4c74dcc447d7
           fetch-depth: 1
 
+      # ================================================================
+      # 2. Clone PassWall-Packages
+      # ================================================================
       - name: Clone PassWall-Packages
         shell: bash
         run: |
@@ -32,9 +38,13 @@ jobs:
 
           git checkout a8302d598ca54cda22f7fe76fa553b3df034f8ae
 
+          echo
           echo "PassWall-Packages:"
           git rev-parse HEAD
 
+      # ================================================================
+      # 3. Verify source tree
+      # ================================================================
       - name: Verify source tree
         shell: bash
         run: |
@@ -66,6 +76,9 @@ jobs:
           echo "--- SCRIPT DIRECTORY ---"
           ls -la scripts
 
+      # ================================================================
+      # 4. Audit Sing-box package
+      # ================================================================
       - name: Audit Sing-box package
         shell: bash
         run: |
@@ -75,9 +88,11 @@ jobs:
           echo "=== SING-BOX PACKAGE AUDIT ==="
           echo "========================================"
 
-          test -f package/openwrt-passwall-packages/sing-box/Makefile
+          test -f \
+            package/openwrt-passwall-packages/sing-box/Makefile
 
           echo "--- COMMITS ---"
+
           echo "ImmortalWrt:"
           git rev-parse HEAD
 
@@ -85,12 +100,16 @@ jobs:
           git -C package/openwrt-passwall-packages rev-parse HEAD
 
           echo "--- SING-BOX DIRECTORY ---"
-          ls -la package/openwrt-passwall-packages/sing-box
+          ls -la \
+            package/openwrt-passwall-packages/sing-box
 
           echo "--- MAKEFILE ---"
           sed -n '1,140p' \
             package/openwrt-passwall-packages/sing-box/Makefile
 
+      # ================================================================
+      # 5. Generate package metadata
+      # ================================================================
       - name: Generate package metadata
         shell: bash
         run: |
@@ -102,6 +121,9 @@ jobs:
 
           make defconfig
 
+      # ================================================================
+      # 6. Inspect Sing-box metadata
+      # ================================================================
       - name: Inspect Sing-box metadata
         shell: bash
         run: |
@@ -112,62 +134,128 @@ jobs:
           echo "========================================"
 
           echo "--- package info ---"
+
           grep -n -A30 -B5 \
             "Source-Makefile: package/openwrt-passwall-packages/sing-box/Makefile" \
             tmp/.packageinfo || true
 
+          echo
           echo "--- package dependencies ---"
+
           grep -n \
             "openwrt-passwall-packages/sing-box" \
             tmp/.packagedeps || true
 
+          echo
           echo "--- CONFIG ---"
+
           grep -n \
             '^CONFIG_PACKAGE_sing-box=' \
             .config || true
 
-      - name: Verify Host Ninja
+      # ================================================================
+      # 7. Prepare OpenWrt host tool: ninja
+      #
+      # IMPORTANT:
+      # package/system/apk host-compile uses:
+      #
+      #   $(STAGING_DIR_HOST)/bin/ninja
+      #
+      # Ubuntu's /usr/local/bin/ninja is NOT sufficient.
+      #
+      # Build the OpenWrt-native ninja into:
+      #
+      #   staging_dir/host/bin/ninja
+      # ================================================================
+      - name: Prepare OpenWrt host ninja
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== VERIFY HOST NINJA ==="
+          echo "=== PREPARE OPENWRT HOST NINJA ==="
           echo "========================================"
 
           echo "--- SYSTEM NINJA ---"
-          command -v ninja || true
-          ninja --version || true
+
+          if command -v ninja >/dev/null 2>&1; then
+            command -v ninja
+            ninja --version
+          else
+            echo "System ninja: NOT FOUND"
+          fi
+
+          echo
+          echo "--- BEFORE BUILD ---"
+
+          if [ -x staging_dir/host/bin/ninja ]; then
+            staging_dir/host/bin/ninja --version
+          else
+            echo "OpenWrt staging ninja: NOT FOUND"
+          fi
+
+          echo
+          echo "--- BUILD OPENWRT NINJA ---"
+
+          make tools/ninja/compile V=s -j1
+
+          echo
+          echo "--- AFTER BUILD ---"
+
+          test -x staging_dir/host/bin/ninja
+
+          echo "OpenWrt staging ninja:"
+          staging_dir/host/bin/ninja --version
+
+          echo
+          echo "Ninja path:"
+          readlink -f staging_dir/host/bin/ninja
+
+      # ================================================================
+      # 8. Verify OpenWrt host tools
+      # ================================================================
+      - name: Verify OpenWrt host tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== VERIFY OPENWRT HOST TOOLS ==="
+          echo "========================================"
 
           echo "--- OPENWRT STAGING NINJA ---"
-          ls -l staging_dir/host/bin/ninja 2>&1 || true
 
-          echo "--- HOST MESON / NINJA ---"
-          ls -l staging_dir/host/bin/meson 2>&1 || true
-          ls -l staging_dir/host/bin/ninja 2>&1 || true
+          test -x staging_dir/host/bin/ninja
+          ls -l staging_dir/host/bin/ninja
+          staging_dir/host/bin/ninja --version
 
-          echo "--- HOST BIN MATCHES ---"
-          ls -la staging_dir/host/bin/ 2>/dev/null \
-            | grep -E '(^|[[:space:]])(ninja|meson)([[:space:]]|$)' \
-            || true
+          echo
+          echo "--- OPENWRT HOST PYTHON ---"
 
-          echo "--- NINJA REFERENCES IN OPENWRT ---"
-          grep -RniE 'ninja' \
-            package/system \
-            package/utils \
-            tools \
-            include \
-            2>/dev/null \
-            | head -n 100 \
-            || true
+          test -x staging_dir/host/bin/python3
+          staging_dir/host/bin/python3 --version
 
-          echo "--- NINJA FILES IN TREE ---"
-          find . \
-            \( -name 'ninja' -o -name 'ninja-*' -o -name '*ninja*' \) \
-            2>/dev/null \
-            | head -n 100 \
-            || true
+          echo
+          echo "--- OPENWRT MESON SCRIPT ---"
 
+          test -f staging_dir/host/bin/meson.py
+          ls -l staging_dir/host/bin/meson.py
+
+          echo
+          echo "--- HOST TOOL SUMMARY ---"
+
+          echo "ninja:"
+          readlink -f staging_dir/host/bin/ninja
+
+          echo "python3:"
+          readlink -f staging_dir/host/bin/python3
+
+          echo "meson.py:"
+          readlink -f staging_dir/host/bin/meson.py
+
+      # ================================================================
+      # 9. Verify real Make target
+      # ================================================================
       - name: Verify Make target
         shell: bash
         run: |
@@ -180,8 +268,11 @@ jobs:
           echo "--- REAL TARGET: package/sing-box/compile ---"
 
           make package/sing-box/compile V=s -n \
-            2>&1 | tail -n 150
+            2>&1 | tail -n 200
 
+      # ================================================================
+      # 10. Verify source path is NOT a Make target
+      # ================================================================
       - name: Verify source path is not a target
         shell: bash
         run: |
@@ -218,9 +309,34 @@ jobs:
           echo "Unexpected error."
           exit "$rc"
 
+      # ================================================================
+      # 11. Final audit
+      # ================================================================
       - name: Final audit
         shell: bash
         run: |
+          set -euo pipefail
+
           echo "========================================"
           echo "=== AUDIT COMPLETE ==="
           echo "========================================"
+
+          echo
+          echo "ImmortalWrt:"
+          git rev-parse HEAD
+
+          echo
+          echo "PassWall-Packages:"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
+
+          echo
+          echo "Sing-box:"
+          grep '^PKG_VERSION:=' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+          echo
+          echo "OpenWrt staging ninja:"
+          staging_dir/host/bin/ninja --version
+
+          echo
+          echo "RESULT: PASS"
