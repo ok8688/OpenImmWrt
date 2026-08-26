@@ -126,6 +126,48 @@ jobs:
             '^CONFIG_PACKAGE_sing-box=' \
             .config || true
 
+      - name: Verify Host Ninja
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== VERIFY HOST NINJA ==="
+          echo "========================================"
+
+          echo "--- SYSTEM NINJA ---"
+          command -v ninja || true
+          ninja --version || true
+
+          echo "--- OPENWRT STAGING NINJA ---"
+          ls -l staging_dir/host/bin/ninja 2>&1 || true
+
+          echo "--- HOST MESON / NINJA ---"
+          ls -l staging_dir/host/bin/meson 2>&1 || true
+          ls -l staging_dir/host/bin/ninja 2>&1 || true
+
+          echo "--- HOST BIN MATCHES ---"
+          ls -la staging_dir/host/bin/ 2>/dev/null \
+            | grep -E '(^|[[:space:]])(ninja|meson)([[:space:]]|$)' \
+            || true
+
+          echo "--- NINJA REFERENCES IN OPENWRT ---"
+          grep -RniE 'ninja' \
+            package/system \
+            package/utils \
+            tools \
+            include \
+            2>/dev/null \
+            | head -n 100 \
+            || true
+
+          echo "--- NINJA FILES IN TREE ---"
+          find . \
+            \( -name 'ninja' -o -name 'ninja-*' -o -name '*ninja*' \) \
+            2>/dev/null \
+            | head -n 100 \
+            || true
+
       - name: Verify Make target
         shell: bash
         run: |
