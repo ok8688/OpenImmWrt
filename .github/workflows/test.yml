@@ -11,6 +11,10 @@ jobs:
 
       # ================================================================
       # 1. Checkout ImmortalWrt
+      #
+      # IMPORTANT:
+      # ImmortalWrt is intentionally FIXED.
+      # This test is for the current SNAPSHOT build environment.
       # ================================================================
       - name: Checkout ImmortalWrt
         uses: actions/checkout@v4
@@ -20,33 +24,46 @@ jobs:
           fetch-depth: 1
 
       # ================================================================
-      # 2. Clone PassWall-Packages
+      # 2. Clone latest official PassWall-Packages
+      #
+      # IMPORTANT:
+      # Always pull the CURRENT latest main commit.
+      #
+      # Official repository:
+      # Openwrt-Passwall/openwrt-passwall-packages
+      #
+      # DO NOT pin an old PassWall-Packages commit here.
       # ================================================================
-      - name: Clone PassWall-Packages
+      - name: Clone latest official PassWall-Packages
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== CLONE PASSWALL-PACKAGES ==="
+          echo "=== CLONE LATEST PASSWALL-PACKAGES ==="
           echo "========================================"
 
           git clone \
             --depth=1 \
-            https://github.com/xiaorouji/openwrt-passwall-packages.git \
+            --branch main \
+            https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git \
             package/openwrt-passwall-packages
 
-          cd package/openwrt-passwall-packages
+          echo
+          echo "--- PASSWALL-PACKAGES REMOTE ---"
 
-          git fetch --depth=1 origin \
-            a8302d598ca54cda22f7fe76fa553b3df034f8ae
-
-          git checkout --detach \
-            a8302d598ca54cda22f7fe76fa553b3df034f8ae
+          git -C package/openwrt-passwall-packages remote -v
 
           echo
-          echo "PassWall-Packages:"
-          git rev-parse HEAD
+          echo "--- PASSWALL-PACKAGES HEAD ---"
+
+          git -C package/openwrt-passwall-packages rev-parse HEAD
+
+          echo
+          echo "--- PASSWALL-PACKAGES LOG ---"
+
+          git -C package/openwrt-passwall-packages \
+            log -1 --oneline --decorate
 
       # ================================================================
       # 3. Verify source tree
@@ -108,7 +125,7 @@ jobs:
           git rev-parse HEAD
 
           echo
-          echo "PassWall-Packages:"
+          echo "Latest PassWall-Packages:"
           git -C package/openwrt-passwall-packages rev-parse HEAD
 
           echo
@@ -120,7 +137,7 @@ jobs:
           echo
           echo "--- SING-BOX MAKEFILE ---"
 
-          sed -n '1,160p' "$SINGBOX_MAKEFILE"
+          sed -n '1,180p' "$SINGBOX_MAKEFILE"
 
       # ================================================================
       # 5. Generate package metadata
@@ -160,7 +177,7 @@ jobs:
           grep -n \
             "sing-box" \
             tmp/.packagedeps \
-            | head -n 30 || true
+            | head -n 50 || true
 
           echo
           echo "--- CONFIG ---"
@@ -171,14 +188,6 @@ jobs:
 
       # ================================================================
       # 7. Build OpenWrt host Ninja
-      #
-      # Previous confirmed blocker:
-      #
-      # staging_dir/host/bin/ninja
-      #
-      # was missing.
-      #
-      # This OpenWrt-native host tool target fixed that blocker.
       # ================================================================
       - name: Build OpenWrt host Ninja
         shell: bash
@@ -249,14 +258,10 @@ jobs:
           echo "Meson path:"
           readlink -f staging_dir/host/bin/meson.py
 
-          echo
-          echo "Meson file:"
-          ls -l staging_dir/host/bin/meson.py
-
       # ================================================================
-      # 9. Verify APK host Meson/Ninja
+      # 9. Verify APK host
       #
-      # This was previously confirmed PASS after Ninja was built.
+      # Previously confirmed PASS after Ninja was supplied.
       # ================================================================
       - name: Verify APK host Meson Ninja
         shell: bash
@@ -287,119 +292,72 @@ jobs:
           echo "APK host compile: PASS"
 
       # ================================================================
-      # 10. Deep audit OpenWrt host OpenSSL
-      #
-      # Current confirmed blocker:
-      #
-      # staging_dir/host/bin/openssl
-      #
-      # is missing.
+      # 10. Locate OpenSSL host dependency
       #
       # IMPORTANT:
-      #
-      # DO NOT:
-      #   - install Ubuntu OpenSSL
-      #   - create a symlink
-      #   - modify Sing-box Makefile
-      #   - modify package dependencies
-      #   - guess an OpenSSL compile target
-      #
-      # This step ONLY determines how this ImmortalWrt tree expects
-      # staging_dir/host/bin/openssl to be provided.
+      # We do NOT guess a target.
+      # We only inspect the actual source tree.
       # ================================================================
-      - name: Deep audit OpenWrt host OpenSSL
+      - name: Locate OpenSSL host dependency
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== DEEP AUDIT OPENWRT HOST OPENSSL ==="
+          echo "=== LOCATE OPENSSL HOST DEPENDENCY ==="
           echo "========================================"
 
-          echo
-          echo "--- SYSTEM OPENSSL ---"
+          echo "--- STAGING OPENSSL ---"
 
-          if command -v openssl >/dev/null 2>&1; then
-            command -v openssl
-            openssl version
+          if [ -x staging_dir/host/bin/openssl ]; then
+            echo "FOUND:"
+            readlink -f staging_dir/host/bin/openssl
+            staging_dir/host/bin/openssl version
           else
-            echo "System OpenSSL: NOT FOUND"
+            echo "staging_dir/host/bin/openssl: NOT FOUND"
           fi
 
           echo
-          echo "--- OPENWRT STAGING BIN DIRECTORY ---"
+          echo "--- PACKAGE MAKEFILE REFERENCES ---"
 
-          if [ -d staging_dir/host/bin ]; then
-            ls -la staging_dir/host/bin | head -n 200
-          else
-            echo "staging_dir/host/bin: NOT FOUND"
-          fi
-
-          echo
-          echo "--- OPENWRT STAGING LIB DIRECTORY ---"
-
-          if [ -d staging_dir/host/lib ]; then
-            ls -la staging_dir/host/lib | head -n 200
-          else
-            echo "staging_dir/host/lib: NOT FOUND"
-          fi
-
-          echo
-          echo "--- STAGING OPENSSL FILES ---"
-
-          find staging_dir/host \
-            -maxdepth 5 \
-            -type f \
-            \( \
-              -name 'openssl' \
-              -o -name 'libssl*' \
-              -o -name 'libcrypto*' \
-            \) \
-            -print \
-            | sort \
-            | head -n 300 || true
-
-          echo
-          echo "--- STAGING OPENSSL SYMLINKS ---"
-
-          find staging_dir/host \
-            -maxdepth 5 \
-            -type l \
-            \( \
-              -name 'openssl' \
-              -o -name 'libssl*' \
-              -o -name 'libcrypto*' \
-            \) \
-            -print \
-            -exec ls -l {} \; \
+          grep -RniE \
+            'STAGING_DIR_HOST.*openssl|BUILD_KEY_APK_SEC|BUILD_KEY_APK_PUB' \
+            package \
+            --exclude-dir=.git \
             | head -n 200 || true
 
           echo
-          echo "--- BUILD_KEY_APK_SEC ---"
-
-          grep -Rni \
-            'BUILD_KEY_APK_SEC' \
-            include package \
-            --exclude-dir=.git \
-            | head -n 100 || true
-
-          echo
-          echo "--- STAGING OPENSSL REFERENCES ---"
+          echo "--- INCLUDE REFERENCES ---"
 
           grep -RniE \
-            'STAGING_DIR_HOST.*/bin/openssl|STAGING_DIR_HOST.*openssl|OPENSSL_DIR' \
-            include tools package \
+            'STAGING_DIR_HOST.*openssl|OPENSSL_DIR|libcrypto|libssl' \
+            include \
             --exclude-dir=.git \
             | head -n 300 || true
 
           echo
-          echo "--- OPENSSL HOST REFERENCES ---"
+          echo "--- TOOLS REFERENCES ---"
 
           grep -RniE \
-            'openssl.*host|host.*openssl|openssl.*staging|staging.*openssl' \
-            include tools package \
+            'STAGING_DIR_HOST.*openssl|OPENSSL_DIR|libcrypto|libssl' \
+            tools \
             --exclude-dir=.git \
-            | head -n 400 || true
+            | head -n 300 || true
+
+          echo
+          echo "--- OPENSSL DIRECTORIES ---"
+
+          find tools package \
+            -maxdepth 5 \
+            -type d \
+            \( \
+              -iname '*openssl*' \
+              -o -iname '*libssl*' \
+              -o -iname '*libcrypto*' \
+            \) \
+            -print \
+            | sort \
+            | head -n 300
 
           echo
           echo "--- OPENSSL MAKEFILES ---"
@@ -408,7 +366,6 @@ jobs:
             -type f \
             -name Makefile \
             -print \
-            | sort \
             | while read -r mf; do
                 if grep -qiE \
                   'openssl|libcrypto|libssl' \
@@ -417,74 +374,11 @@ jobs:
                   echo "$mf"
                 fi
               done \
+            | sort \
             | head -n 300
 
-          echo
-          echo "--- HOST STAGING STAMPS ---"
-
-          if [ -d staging_dir/host/stamp ]; then
-            find staging_dir/host/stamp \
-              -maxdepth 1 \
-              -type f \
-              -print \
-              | sort \
-              | head -n 300
-          else
-            echo "staging_dir/host/stamp: NOT FOUND"
-          fi
-
-          echo
-          echo "--- OPENSSL RELATED STAMPS ---"
-
-          find staging_dir/host/stamp \
-            -maxdepth 1 \
-            -type f \
-            \( \
-              -iname '*ssl*' \
-              -o -iname '*crypto*' \
-              -o -iname '*openssl*' \
-            \) \
-            -print \
-            | sort \
-            || true
-
-          echo
-          echo "--- BUILD DIRECTORY OPENSSL ---"
-
-          find build_dir/host build_dir/hostpkg \
-            -maxdepth 5 \
-            \( \
-              -iname '*openssl*' \
-              -o -iname '*libcrypto*' \
-              -o -iname '*libssl*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | head -n 300 || true
-
-          echo
-          echo "--- OPENSSL PACKAGE DIRECTORIES ---"
-
-          find package \
-            -maxdepth 4 \
-            -type d \
-            \( \
-              -iname '*openssl*' \
-              -o -iname '*ssl*' \
-            \) \
-            -print \
-            | sort \
-            | head -n 300 || true
-
-          echo
-          echo "========================================"
-          echo "=== END OPENSSL DEEP AUDIT ==="
-          echo "========================================"
-
       # ================================================================
-      # 11. Inspect package/Makefile APK key generation
-      #
-      # This isolates the exact rule that caused the previous failure.
+      # 11. Inspect APK signing key rule
       # ================================================================
       - name: Inspect APK signing key rule
         shell: bash
@@ -495,22 +389,13 @@ jobs:
           echo "=== INSPECT APK SIGNING KEY RULE ==="
           echo "========================================"
 
-          echo "--- package/Makefile: APK KEY RULE ---"
+          echo "--- package/Makefile ---"
 
           nl -ba package/Makefile \
             | sed -n '45,80p'
 
           echo
-          echo "--- ALL OPENSSL INVOCATIONS IN PACKAGE MAKEFILE ---"
-
-          grep -n \
-            -C 5 \
-            'STAGING_DIR_HOST.*openssl' \
-            package/Makefile \
-            || true
-
-          echo
-          echo "--- BUILD KEY VARIABLES ---"
+          echo "--- BUILD KEY REFERENCES ---"
 
           grep -Rni \
             'BUILD_KEY_APK_' \
@@ -519,12 +404,9 @@ jobs:
             | head -n 100 || true
 
       # ================================================================
-      # 12. Inspect OpenWrt host dependency infrastructure
-      #
-      # We do not assume an OpenSSL target.
-      # We inspect how host tools are normally registered and staged.
+      # 12. Inspect host dependency infrastructure
       # ================================================================
-      - name: Inspect OpenWrt host dependency infrastructure
+      - name: Inspect host dependency infrastructure
         shell: bash
         run: |
           set -euo pipefail
@@ -533,7 +415,7 @@ jobs:
           echo "=== INSPECT HOST DEPENDENCY SYSTEM ==="
           echo "========================================"
 
-          echo "--- HOST_BUILD references ---"
+          echo "--- HOST BUILD REFERENCES ---"
 
           grep -RniE \
             'HOST_BUILD|Build/Host|Host/Compile|STAGING_DIR_HOST' \
@@ -545,75 +427,63 @@ jobs:
           echo "--- HOST TOOL INSTALL REFERENCES ---"
 
           grep -RniE \
-            'STAGING_DIR_HOST.*bin/|INSTALL_BIN.*STAGING_DIR_HOST|install.*STAGING_DIR_HOST' \
+            'INSTALL_BIN.*STAGING_DIR_HOST|STAGING_DIR_HOST.*/bin/' \
             include tools package \
             --exclude-dir=.git \
             | head -n 500 || true
 
-          echo
-          echo "--- OPENSSL REFERENCES OUTSIDE PACKAGE DIRECTORIES ---"
-
-          grep -RniE \
-            'openssl|libcrypto|libssl' \
-            include tools \
-            --exclude-dir=.git \
-            | head -n 500 || true
-
       # ================================================================
-      # 13. Final OpenSSL state report
-      #
-      # This step does not attempt to repair anything.
-      # It records the exact state before the real Sing-box test.
+      # 13. State report before real build
       # ================================================================
-      - name: Final OpenSSL state report
+      - name: State report
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== FINAL OPENSSL STATE ==="
+          echo "=== CURRENT BUILD STATE ==="
           echo "========================================"
 
           echo
-          echo "--- staging_dir/host/bin/openssl ---"
+          echo "ImmortalWrt:"
+          git rev-parse HEAD
+
+          echo
+          echo "PassWall-Packages:"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
+
+          echo
+          echo "Sing-box:"
+          grep '^PKG_NAME:=' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+          grep '^PKG_VERSION:=' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+          grep '^PKG_RELEASE:=' \
+            package/openwrt-passwall-packages/sing-box/Makefile
+
+          echo
+          echo "Ninja:"
+          staging_dir/host/bin/ninja --version
+
+          echo
+          echo "Meson:"
+          staging_dir/host/bin/meson.py --version
+
+          echo
+          echo "OpenSSL:"
 
           if [ -x staging_dir/host/bin/openssl ]; then
-            echo "FOUND"
-            readlink -f staging_dir/host/bin/openssl
             staging_dir/host/bin/openssl version
           else
             echo "NOT FOUND"
           fi
 
-          echo
-          echo "--- staging_dir/host/lib/libcrypto ---"
-
-          find staging_dir/host/lib \
-            -maxdepth 1 \
-            \( \
-              -name 'libcrypto*' \
-              -o -name 'libssl*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 100 || true
-
-          echo
-          echo "--- staging_dir/host/bin ---"
-
-          ls -la staging_dir/host/bin \
-            | head -n 200
-
       # ================================================================
       # 14. REAL SING-BOX COMPILE TEST
-      #
-      # We intentionally do not repair OpenSSL here.
-      #
-      # The purpose of this run is to expose the exact current blocker
-      # after Ninja + Meson + APK host have been prepared.
       # ================================================================
-      - name: Compile Sing-box
+      - name: Real Sing-box compile test
         shell: bash
         run: |
           set -euo pipefail
@@ -635,21 +505,7 @@ jobs:
           staging_dir/host/bin/meson.py --version
 
           echo
-          echo "--- VERIFY STAGING OPENSSL ---"
-
-          if [ -x staging_dir/host/bin/openssl ]; then
-            echo "OpenWrt staging OpenSSL: FOUND"
-            staging_dir/host/bin/openssl version
-          else
-            echo "OpenWrt staging OpenSSL: NOT FOUND"
-            echo
-            echo "WARNING:"
-            echo "The Sing-box target is expected to fail at the APK"
-            echo "signing-key generation stage if OpenSSL is required."
-          fi
-
-          echo
-          echo "--- SING-BOX MAKEFILE ---"
+          echo "--- VERIFY SING-BOX MAKEFILE ---"
 
           SINGBOX_MAKEFILE="package/openwrt-passwall-packages/sing-box/Makefile"
 
@@ -713,12 +569,10 @@ jobs:
 
           echo
           echo "OpenWrt staging Ninja:"
-          test -x staging_dir/host/bin/ninja
           staging_dir/host/bin/ninja --version
 
           echo
           echo "OpenWrt staging Meson:"
-          test -x staging_dir/host/bin/meson.py
           staging_dir/host/bin/meson.py --version
 
           echo
