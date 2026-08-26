@@ -236,22 +236,32 @@ jobs:
           staging_dir/host/bin/python3 --version
 
           echo
-          echo "--- OPENWRT MESON SCRIPT ---"
+          echo "--- OPENWRT HOST BIN ---"
 
-          test -f staging_dir/host/bin/meson.py
-          ls -l staging_dir/host/bin/meson.py
+          ls -la staging_dir/host/bin | grep -E '(^|/)(ninja|python3|meson)(\.py)?$' || true
 
           echo
-          echo "--- HOST TOOL SUMMARY ---"
+          echo "--- MESON ---"
 
-          echo "ninja:"
-          readlink -f staging_dir/host/bin/ninja
+          if [ -x staging_dir/host/bin/meson ]; then
+            echo "Found: staging_dir/host/bin/meson"
+            staging_dir/host/bin/meson --version
 
-          echo "python3:"
-          readlink -f staging_dir/host/bin/python3
+          elif [ -f staging_dir/host/bin/meson.py ]; then
+            echo "Found: staging_dir/host/bin/meson.py"
+            staging_dir/host/bin/python3 \
+              staging_dir/host/bin/meson.py \
+              --version
 
-          echo "meson.py:"
-          readlink -f staging_dir/host/bin/meson.py
+          else
+            echo "Meson executable/script not found in staging_dir/host/bin"
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "=== HOST TOOL VERIFICATION PASSED ==="
+          echo "========================================"
 
       # ================================================================
       # 9. Verify real Make target
