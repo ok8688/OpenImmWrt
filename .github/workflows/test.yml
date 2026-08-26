@@ -395,19 +395,20 @@ jobs:
       # ADDED TEST STEP ONLY.
       #
       # IMPORTANT:
-      # This step ONLY locates and diagnoses libgcc_s.so.
+      # This step is DIAGNOSTIC ONLY.
       #
       # DO NOT:
-      #   - modify OpenWrt source files
-      #   - modify package Makefiles
-      #   - modify PassWall-Packages
-      #   - modify sing-box
-      #   - create symlinks
       #   - copy libgcc_s.so
-      #   - repair the toolchain
+      #   - create libgcc_s.so symlinks
+      #   - modify toolchain files
+      #   - modify OpenWrt source
+      #   - modify package Makefiles
+      #   - modify PassWall
+      #   - modify sing-box
       #
-      # The purpose is to identify why package/libs/toolchain
-      # cannot find the expected libgcc_s.so.* file.
+      # The purpose is to discover where libgcc_s.so actually exists,
+      # whether GCC generated it, and whether the expected toolchain
+      # staging directory is incomplete.
       # ================================================================
       - name: Diagnose libgcc_s.so
         shell: bash
@@ -418,82 +419,77 @@ jobs:
           echo "=== DIAGNOSE LIBGCC_S.SO ==="
           echo "========================================"
 
-          echo "--- TARGET TOOLCHAIN VARIABLES ---"
-
-          echo "TARGET:"
-          echo "${TARGET:-NOT SET}"
-
           echo
+          echo "--- TARGET INFORMATION ---"
+
           echo "ARCH:"
-          echo "${ARCH:-NOT SET}"
+          uname -m
 
           echo
-          echo "STAGING_DIR:"
-          echo "${STAGING_DIR:-NOT SET}"
+          echo "HOST GCC:"
+          gcc --version | head -n 3
 
           echo
-          echo "STAGING_DIR_TOOLCHAIN:"
-          echo "${STAGING_DIR_TOOLCHAIN:-NOT SET}"
+          echo "HOST G++:"
+          g++ --version | head -n 3
+
+          echo
+          echo "TARGET TOOLCHAIN PREFIXES ---"
+
+          compgen -c | grep '^aarch64-openwrt-linux-musl-' \
+            | sort -u \
+            | head -n 100 || true
+
+          echo
+          echo "--- STAGING DIR ---"
+
+          find staging_dir \
+            -maxdepth 2 \
+            -type d \
+            -print \
+            | sort \
+            | head -n 300
+
+          echo
+          echo "--- TOOLCHAIN STAGING DIRECTORIES ---"
+
+          find staging_dir \
+            -maxdepth 2 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            | sort
 
           echo
           echo "--- EXPECTED TOOLCHAIN DIRECTORY ---"
 
           EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
 
-          echo "Expected:"
-          echo "$EXPECTED_TOOLCHAIN"
-
           if [ -d "$EXPECTED_TOOLCHAIN" ]; then
             echo "FOUND:"
-            ls -ld "$EXPECTED_TOOLCHAIN"
+            echo "$EXPECTED_TOOLCHAIN"
           else
             echo "NOT FOUND:"
             echo "$EXPECTED_TOOLCHAIN"
           fi
 
           echo
-          echo "--- EXPECTED LIB DIRECTORY ---"
+          echo "--- EXPECTED LIBGCC LOCATION ---"
 
-          EXPECTED_LIB="$EXPECTED_TOOLCHAIN/lib"
+          EXPECTED_LIBGCC="$EXPECTED_TOOLCHAIN/lib/libgcc_s.so"
 
-          echo "Expected:"
-          echo "$EXPECTED_LIB"
+          echo "Expected prefix:"
+          echo "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*"
 
-          if [ -d "$EXPECTED_LIB" ]; then
-            echo "FOUND:"
-            ls -lad "$EXPECTED_LIB"
+          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
+            echo "EXPECTED LIBGCC FILE FOUND:"
+            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
           else
-            echo "NOT FOUND:"
-            echo "$EXPECTED_LIB"
+            echo "EXPECTED LIBGCC FILE NOT FOUND."
           fi
 
           echo
-          echo "--- EXPECTED LIBGCC_S.SO ---"
-
-          if compgen -G "$EXPECTED_LIB/libgcc_s.so.*" > /dev/null; then
-            echo "FOUND:"
-            ls -lah "$EXPECTED_LIB"/libgcc_s.so.*
-          else
-            echo "NOT FOUND:"
-            echo "$EXPECTED_LIB/libgcc_s.so.*"
-          fi
-
-          echo
-          echo "--- ALL LIBGCC_S.SO FILES UNDER STAGING_DIR ---"
-
-          find staging_dir \
-            -type f \
-            \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 300 || true
-
-          echo
-          echo "--- ALL LIBGCC_S.SO FILES UNDER WORKSPACE ---"
+          echo "--- FIND ALL libgcc_s.so FILES ---"
 
           find . \
             -type f \
@@ -501,146 +497,301 @@ jobs:
               -name 'libgcc_s.so' \
               -o -name 'libgcc_s.so.*' \
             \) \
-            -not -path './.git/*' \
             -print \
             2>/dev/null \
             | sort \
-            | head -n 500 || true
+            | head -n 500
 
           echo
-          echo "--- GCC TOOLCHAIN DIRECTORIES ---"
+          echo "--- FIND ALL libgcc_s.so SYMLINKS ---"
 
-          find staging_dir \
-            -maxdepth 3 \
-            -type d \
-            -iname '*gcc*' \
+          find . \
+            -type l \
+            \( \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
+            \) \
             -print \
             2>/dev/null \
             | sort \
-            | head -n 300 || true
+            | head -n 500
 
           echo
-          echo "--- TOOLCHAIN LIB CONTENTS ---"
+          echo "--- SYSTEM GCC RUNTIME LIBGCC ---"
 
-          if [ -d "$EXPECTED_LIB" ]; then
-            ls -lah "$EXPECTED_LIB" | head -n 300
+          GCC_LIBGCC_PATH="$(gcc -print-libgcc-file-name)"
+
+          echo "gcc -print-libgcc-file-name:"
+          echo "$GCC_LIBGCC_PATH"
+
+          if [ -e "$GCC_LIBGCC_PATH" ]; then
+            echo "HOST GCC libgcc file exists:"
+            ls -lah "$GCC_LIBGCC_PATH"
+            file "$GCC_LIBGCC_PATH" || true
           else
-            echo "Cannot inspect missing directory:"
-            echo "$EXPECTED_LIB"
+            echo "HOST GCC libgcc file does NOT exist."
           fi
 
           echo
-          echo "--- TOOLCHAIN GCC VERSION ---"
+          echo "--- TARGET GCC RUNTIME LIBGCC ---"
 
-          if command -v aarch64-openwrt-linux-musl-gcc >/dev/null 2>&1; then
-            command -v aarch64-openwrt-linux-musl-gcc
-            aarch64-openwrt-linux-musl-gcc --version
+          TARGET_GCC="aarch64-openwrt-linux-musl-gcc"
+
+          if command -v "$TARGET_GCC" >/dev/null 2>&1; then
+            echo "TARGET GCC:"
+            command -v "$TARGET_GCC"
+
+            echo
+            echo "TARGET GCC VERSION:"
+            "$TARGET_GCC" --version | head -n 3
+
+            echo
+            echo "TARGET GCC LIBGCC:"
+            "$TARGET_GCC" -print-libgcc-file-name || true
+
+            TARGET_LIBGCC="$("$TARGET_GCC" -print-libgcc-file-name 2>/dev/null || true)"
+
+            if [ -n "$TARGET_LIBGCC" ] && [ -e "$TARGET_LIBGCC" ]; then
+              echo "TARGET GCC libgcc exists:"
+              ls -lah "$TARGET_LIBGCC"
+              file "$TARGET_LIBGCC" || true
+            else
+              echo "TARGET GCC libgcc does NOT exist or target GCC is incomplete."
+            fi
           else
-            echo "aarch64-openwrt-linux-musl-gcc: NOT FOUND"
+            echo "TARGET GCC NOT FOUND:"
+            echo "$TARGET_GCC"
           fi
 
           echo
-          echo "--- STAGING TOOLCHAIN GCC ---"
+          echo "--- TOOLCHAIN GCC DIRECTORIES ---"
 
           find staging_dir \
             -type f \
-            -name 'aarch64-openwrt-linux-musl-gcc' \
+            \( \
+              -name 'gcc' \
+              -o -name 'cc1' \
+              -o -name 'libgcc_s.so*' \
+            \) \
             -print \
             2>/dev/null \
-            | head -n 50 || true
+            | sort \
+            | head -n 500
 
           echo
-          echo "--- GCC SEARCH PATH ---"
+          echo "--- TOOLCHAIN LIB DIRECTORIES ---"
 
-          if command -v aarch64-openwrt-linux-musl-gcc >/dev/null 2>&1; then
-            GCC_PATH="$(command -v aarch64-openwrt-linux-musl-gcc)"
+          find staging_dir \
+            -type d \
+            \( \
+              -name 'lib' \
+              -o -name 'usr' \
+            \) \
+            -path '*toolchain*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500
 
-            echo "GCC:"
-            echo "$GCC_PATH"
+          echo
+          echo "--- LIBGCC REFERENCES IN SOURCE TREE ---"
 
-            echo
-            echo "GCC REAL PATH:"
-            readlink -f "$GCC_PATH" || true
-
-            echo
-            echo "GCC PRINT SEARCH DIRS:"
-
-            aarch64-openwrt-linux-musl-gcc \
-              -print-search-dirs \
-              2>/dev/null || true
-
-            echo
-            echo "GCC PRINT LIBGCC FILE:"
-
-            aarch64-openwrt-linux-musl-gcc \
-              -print-file-name=libgcc_s.so.1 \
-              2>/dev/null || true
-
-            echo
-            echo "GCC PRINT LIBGCC DIRECTORY:"
-
-            aarch64-openwrt-linux-musl-gcc \
-              -print-libgcc-file-name \
-              2>/dev/null || true
-          else
-            echo "GCC executable unavailable."
-          fi
+          grep -RniE \
+            'libgcc_s\.so|libgcc1|GCC_VERSION|gcc-14\.4\.0' \
+            package \
+            toolchain \
+            include \
+            rules.mk \
+            Makefile \
+            --exclude-dir=.git \
+            2>/dev/null \
+            | head -n 800 || true
 
           echo
           echo "--- TOOLCHAIN PACKAGE MAKEFILE ---"
 
           if [ -f package/libs/toolchain/Makefile ]; then
-            echo "Relevant libgcc references:"
-            grep -n -A15 -B15 \
-              'libgcc_s\.so' \
-              package/libs/toolchain/Makefile \
-              || true
+            echo "package/libs/toolchain/Makefile"
 
-            echo
-            echo "Relevant TOOLCHAIN references:"
-            grep -n -A10 -B10 \
-              'STAGING_DIR_TOOLCHAIN' \
+            grep -n -A25 -B25 \
+              'libgcc_s\.so\|libgcc1' \
               package/libs/toolchain/Makefile \
-              | head -n 300 || true
+              | head -n 500 || true
           else
             echo "package/libs/toolchain/Makefile: NOT FOUND"
           fi
 
           echo
-          echo "--- TOOLCHAIN CONFIGURATION ---"
+          echo "--- TOOLCHAIN PACKAGE CONFIG ---"
 
           grep -nE \
-            'CONFIG_(GCC|USE_MUSL|TARGET_ARCH|TARGET_OPTIMIZATION|TOOLCHAIN)' \
+            'CONFIG_PACKAGE_libgcc|CONFIG_GCC_VERSION|CONFIG_TOOLCHAIN' \
             .config \
             2>/dev/null \
             | head -n 300 || true
 
           echo
-          echo "--- BUILD DIRECTORY TOOLCHAIN CONTENTS ---"
+          echo "--- STAGING TOOLCHAIN CONTENTS ---"
 
-          find build_dir \
-            -maxdepth 5 \
-            -type d \
-            -iname '*toolchain*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 300 || true
+          if [ -d "$EXPECTED_TOOLCHAIN" ]; then
+            find "$EXPECTED_TOOLCHAIN" \
+              -maxdepth 3 \
+              -print \
+              | sort \
+              | head -n 800
+          else
+            echo "Expected toolchain directory unavailable."
+          fi
 
           echo
-          echo "--- STAGING DIR OVERVIEW ---"
+          echo "========================================"
+          echo "=== LIBGCC_S.SO DIAGNOSTIC COMPLETE ==="
+          echo "========================================"
+
+      # ================================================================
+      # 5E. Diagnose toolchain staging state
+      #
+      # ADDED TEST STEP ONLY.
+      #
+      # DIAGNOSTIC ONLY.
+      # No files are copied, created, linked, or modified.
+      # ================================================================
+      - name: Diagnose toolchain staging state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== DIAGNOSE TOOLCHAIN STAGING STATE ==="
+          echo "========================================"
+
+          echo "--- STAGING DIRECTORY TIMESTAMPS ---"
 
           find staging_dir \
             -maxdepth 2 \
             -type d \
+            -name 'toolchain-*' \
+            -printf '%TY-%Tm-%Td %TH:%TM:%TS %p\n' \
+            2>/dev/null \
+            | sort || true
+
+          echo
+          echo "--- TOOLCHAIN STAMP FILES ---"
+
+          find staging_dir \
+            -type f \
+            \( \
+              -name '*.stamp' \
+              -o -name '.prepared*' \
+              -o -name '.configured*' \
+              -o -name '.built*' \
+            \) \
+            -path '*toolchain*' \
             -print \
             2>/dev/null \
             | sort \
-            | head -n 300 || true
+            | head -n 800
+
+          echo
+          echo "--- BUILD_DIR TOOLCHAIN STATE ---"
+
+          find build_dir \
+            -maxdepth 5 \
+            -type f \
+            -path '*toolchain*' \
+            \( \
+              -name '.prepared*' \
+              -o -name '.configured*' \
+              -o -name '.built*' \
+              -o -name '*.stamp' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 800
+
+          echo
+          echo "--- GCC RUNTIME OBJECTS / LIBRARIES ---"
+
+          find staging_dir build_dir \
+            -type f \
+            \( \
+              -name 'libgcc*.a' \
+              -o -name 'libgcc*.so*' \
+              -o -name 'crtbegin*.o' \
+              -o -name 'crtend*.o' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 1000
+
+          echo
+          echo "--- TOOLCHAIN DIRECTORY SIZE ---"
+
+          du -sh \
+            staging_dir/toolchain-* \
+            2>/dev/null \
+            || true
 
           echo
           echo "========================================"
-          echo "=== LIBGCC_S.SO DIAGNOSIS COMPLETE ==="
+          echo "=== TOOLCHAIN STAGING DIAGNOSTIC DONE ==="
+          echo "========================================"
+
+      # ================================================================
+      # 5F. Inspect exact libgcc package rule
+      #
+      # ADDED TEST STEP ONLY.
+      #
+      # DIAGNOSTIC ONLY.
+      # ================================================================
+      - name: Inspect exact libgcc package rule
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== INSPECT EXACT LIBGCC PACKAGE RULE ==="
+          echo "========================================"
+
+          TOOLCHAIN_MAKEFILE="package/libs/toolchain/Makefile"
+
+          test -f "$TOOLCHAIN_MAKEFILE"
+
+          echo "--- MAKEFILE LINE NUMBERS ---"
+
+          nl -ba "$TOOLCHAIN_MAKEFILE" \
+            | sed -n '730,830p'
+
+          echo
+          echo "--- LIBGCC REFERENCES ---"
+
+          grep -n -A30 -B30 \
+            'libgcc_s\.so' \
+            "$TOOLCHAIN_MAKEFILE" \
+            || true
+
+          echo
+          echo "--- LIBGCC PACKAGE DEFINITIONS ---"
+
+          grep -n -A60 -B20 \
+            'define Package/libgcc' \
+            "$TOOLCHAIN_MAKEFILE" \
+            || true
+
+          echo
+          echo "--- TOOLCHAIN VARIABLES ---"
+
+          grep -nE \
+            'TOOLCHAIN_DIR|GCC_VERSION|GCC_DIR|LIBGCC' \
+            "$TOOLCHAIN_MAKEFILE" \
+            | head -n 300 \
+            || true
+
+          echo
+          echo "========================================"
+          echo "=== LIBGCC RULE INSPECTION COMPLETE ==="
           echo "========================================"
 
       # ================================================================
@@ -968,6 +1119,17 @@ jobs:
             echo "NOT FOUND"
           fi
 
+          echo
+          echo "Expected libgcc_s.so:"
+
+          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
+
+          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
+            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
+          else
+            echo "NOT FOUND"
+          fi
+
       # ================================================================
       # 14. REAL SING-BOX COMPILE TEST
       # ================================================================
@@ -997,6 +1159,17 @@ jobs:
 
           test -x staging_dir/host/bin/openssl
           staging_dir/host/bin/openssl version
+
+          echo
+          echo "--- VERIFY EXPECTED LIBGCC ---"
+
+          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
+
+          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
+            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
+          else
+            echo "Expected libgcc_s.so is NOT present."
+          fi
 
           echo
           echo "--- VERIFY SING-BOX MAKEFILE ---"
@@ -1074,6 +1247,17 @@ jobs:
 
           if [ -x staging_dir/host/bin/openssl ]; then
             staging_dir/host/bin/openssl version
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo
+          echo "Expected libgcc_s.so:"
+
+          EXPECTED_TOOLCHAIN="staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl"
+
+          if compgen -G "$EXPECTED_TOOLCHAIN/lib/libgcc_s.so*" > /dev/null; then
+            ls -lah "$EXPECTED_TOOLCHAIN"/lib/libgcc_s.so*
           else
             echo "NOT FOUND"
           fi
