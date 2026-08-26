@@ -1,4 +1,4 @@
-name: TEST - GCC Toolchain libgcc_s Audit
+name: TEST - GCC Toolchain Forensic Audit
 
 on:
   workflow_dispatch:
@@ -10,11 +10,11 @@ jobs:
     steps:
 
       # ================================================================
-      # 1. Checkout latest ImmortalWrt
+      # 1. Checkout ImmortalWrt
       #
       # IMPORTANT:
-      # Always use current master.
-      # This is a pure SNAPSHOT diagnostic test.
+      # ImmortalWrt always uses the latest master commit.
+      # This test is for the current SNAPSHOT build environment.
       # ================================================================
       - name: Checkout ImmortalWrt
         uses: actions/checkout@v4
@@ -27,8 +27,12 @@ jobs:
       # 2. Clone latest official PassWall-Packages
       #
       # IMPORTANT:
-      # Always use current latest main.
-      # PassWall is NOT modified by this TEST.
+      # Always pull the CURRENT latest main commit.
+      #
+      # This repository is only needed to reproduce the same
+      # dependency environment.
+      #
+      # NO PassWall source will be modified.
       # ================================================================
       - name: Clone latest official PassWall-Packages
         shell: bash
@@ -46,15 +50,18 @@ jobs:
             package/openwrt-passwall-packages
 
           echo
-          echo "--- IMMORTALWRT HEAD ---"
-          git rev-parse HEAD
-
-          echo
           echo "--- PASSWALL-PACKAGES HEAD ---"
+
           git -C package/openwrt-passwall-packages rev-parse HEAD
 
+          echo
+          echo "--- PASSWALL-PACKAGES LOG ---"
+
+          git -C package/openwrt-passwall-packages \
+            log -1 --oneline --decorate
+
       # ================================================================
-      # 3. Verify source tree
+      # 3. Verify source tree and commits
       # ================================================================
       - name: Verify source tree
         shell: bash
@@ -65,11 +72,13 @@ jobs:
           echo "=== VERIFY SOURCE TREE ==="
           echo "========================================"
 
-          pwd
+          echo
+          echo "--- IMMORTALWRT COMMIT ---"
+          git rev-parse HEAD
 
           echo
-          echo "--- IMMORTALWRT ---"
-          git rev-parse HEAD
+          echo "--- PASSWALL-PACKAGES COMMIT ---"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
 
           echo
           echo "--- REQUIRED DIRECTORIES ---"
@@ -89,6 +98,7 @@ jobs:
       # ================================================================
       # 4. Generate package metadata
       #
+      # This is the normal metadata generation only.
       # No source modification.
       # ================================================================
       - name: Generate package metadata
@@ -97,149 +107,84 @@ jobs:
           set -euo pipefail
 
           echo "========================================"
-          echo "=== MAKE DEFCONFIG ==="
+          echo "=== GENERATE PACKAGE METADATA ==="
           echo "========================================"
 
           make defconfig
 
       # ================================================================
-      # 5. Diagnose compiler/toolchain environment BEFORE build
-      #
-      # DIAGNOSTIC ONLY.
-      # No repair.
+      # 5. GCC configuration audit
       # ================================================================
-      - name: Diagnose compiler environment before toolchain build
+      - name: Audit GCC configuration
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== COMPILER ENVIRONMENT BEFORE BUILD ==="
+          echo "=== GCC CONFIGURATION AUDIT ==="
           echo "========================================"
 
           echo
-          echo "--- HOST GCC ---"
+          echo "--- GCC VERSION ---"
 
-          command -v gcc || true
-          gcc --version 2>/dev/null | head -n 3 || true
-
-          echo
-          echo "--- HOST G++ ---"
-
-          command -v g++ || true
-          g++ --version 2>/dev/null | head -n 3 || true
+          grep -n \
+            'CONFIG_GCC_VERSION' \
+            .config || true
 
           echo
-          echo "--- GCC MULTILIB ---"
+          echo "--- TARGET ARCH ---"
 
-          gcc -print-multi-lib 2>/dev/null || true
-
-          echo
-          echo "--- GCC SEARCH PATH ---"
-
-          gcc -print-search-dirs 2>/dev/null || true
-
-          echo
-          echo "--- GCC LIBGCC DIRECTORY ---"
-
-          gcc -print-libgcc-file-name 2>/dev/null || true
-
-          echo
-          echo "--- HOST LIBGCC_S ---"
-
-          find /usr \
-            -type f \
-            \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
+          grep -nE \
+            '^CONFIG_ARCH|^CONFIG_TARGET|^CONFIG_CPU' \
+            .config \
             | head -n 200 || true
 
           echo
-          echo "--- OPENWRT TOOLCHAIN CONFIG ---"
-
-          grep -nE \
-            'CONFIG_GCC_VERSION|CONFIG_USE_GLIBC|CONFIG_USE_MUSL|CONFIG_TARGET_ARCH|CONFIG_TARGET_OPTIMIZATION' \
-            .config \
-            2>/dev/null \
-            | head -n 100 || true
-
-      # ================================================================
-      # 6. Inspect OpenWrt toolchain Makefile
-      #
-      # DIAGNOSTIC ONLY.
-      # ================================================================
-      - name: Inspect OpenWrt toolchain Makefile
-        shell: bash
-        run: |
-          set -u
-
-          echo "========================================"
-          echo "=== INSPECT TOOLCHAIN MAKEFILE ==="
-          echo "========================================"
-
-          TOOLCHAIN_MAKEFILE="package/libs/toolchain/Makefile"
-
-          test -f "$TOOLCHAIN_MAKEFILE"
-
-          echo
-          echo "--- TOOLCHAIN MAKEFILE HEAD ---"
-
-          sed -n '1,180p' "$TOOLCHAIN_MAKEFILE"
-
-          echo
-          echo "--- LIBGCC REFERENCES ---"
-
-          grep -n -A12 -B12 \
-            'LIBGCC_SO\|libgcc_s.so' \
-            "$TOOLCHAIN_MAKEFILE" \
-            || true
-
-          echo
-          echo "--- GCC VERSION REFERENCES ---"
+          echo "--- LIBGCC PACKAGE ---"
 
           grep -n \
-            'GCC_VERSION' \
-            "$TOOLCHAIN_MAKEFILE" \
-            | head -n 100 \
-            || true
+            '^CONFIG_PACKAGE_libgcc=' \
+            .config || true
+
+          echo
+          echo "--- TOOLCHAIN CONFIGURATION ---"
+
+          grep -nE \
+            'CONFIG_(GCC|LIBC|EXTERNAL_TOOLCHAIN)' \
+            .config \
+            | head -n 200 || true
 
       # ================================================================
-      # 7. Inspect toolchain variables
+      # 6. Locate TOOLCHAIN_DIR exactly
       #
-      # DIAGNOSTIC ONLY.
+      # IMPORTANT:
+      # Do not guess the path.
+      # Inspect the actual Makefile expansion.
       # ================================================================
-      - name: Inspect toolchain variables
+      - name: Locate TOOLCHAIN_DIR
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== TOOLCHAIN VARIABLES ==="
+          echo "=== LOCATE TOOLCHAIN_DIR ==="
           echo "========================================"
 
           echo
-          echo "--- TARGET ---"
+          echo "--- TOOLCHAIN_DIR REFERENCES ---"
 
-          grep -nE \
-            '^CONFIG_TARGET_|^CONFIG_ARCH_' \
-            .config \
-            | head -n 120 \
-            || true
-
-          echo
-          echo "--- GCC ---"
-
-          grep -nE \
-            'CONFIG_GCC_VERSION|CONFIG_EXTRA_GCC_CONFIG_OPTIONS' \
-            .config \
-            || true
+          grep -Rni \
+            'TOOLCHAIN_DIR' \
+            include \
+            toolchain \
+            package \
+            Makefile \
+            --exclude-dir=.git \
+            2>/dev/null \
+            | head -n 500 || true
 
           echo
-          echo "--- TOOLCHAIN DIRECTORIES ALREADY PRESENT ---"
+          echo "--- TARGET TOOLCHAIN DIRECTORIES ---"
 
           find staging_dir \
             -maxdepth 2 \
@@ -247,557 +192,667 @@ jobs:
             -name 'toolchain-*' \
             -print \
             2>/dev/null \
-            | sort \
-            || true
-
-      # ================================================================
-      # 8. Toolchain state BEFORE native compile
-      #
-      # DIAGNOSTIC ONLY.
-      # ================================================================
-      - name: Toolchain state before native compile
-        shell: bash
-        run: |
-          set -u
-
-          echo "========================================"
-          echo "=== TOOLCHAIN STATE BEFORE COMPILE ==="
-          echo "========================================"
+            | sort || true
 
           echo
-          echo "--- staging_dir ---"
+          echo "--- ALL TOOLCHAIN-LIKE DIRECTORIES ---"
 
-          find staging_dir \
-            -maxdepth 2 \
-            -type d \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 300 \
-            || true
-
-          echo
-          echo "--- BUILD_DIR TOOLCHAIN ---"
-
-          find build_dir \
-            -maxdepth 5 \
+          find staging_dir build_dir \
+            -maxdepth 4 \
             -type d \
             \( \
-              -name 'toolchain' \
-              -o -name 'gcc-*' \
+              -name 'toolchain-*' \
               -o -name '*gcc*' \
             \) \
             -print \
             2>/dev/null \
             | sort \
-            | head -n 300 \
-            || true
-
-          echo
-          echo "--- EXISTING libgcc_s.so ---"
-
-          find staging_dir build_dir \
-            -type f \
-            \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            || true
+            | head -n 500 || true
 
       # ================================================================
-      # 9. REAL OpenWrt native toolchain compile
-      #
-      # IMPORTANT:
-      # This is the actual native OpenWrt operation.
-      #
-      # NO REPAIR.
-      # NO SYMLINK.
-      # NO COPY.
+      # 7. Locate GCC binaries
       # ================================================================
-      - name: Build OpenWrt native toolchain
-        shell: bash
-        run: |
-          set +e
-
-          echo "========================================"
-          echo "=== BUILD OPENWRT NATIVE TOOLCHAIN ==="
-          echo "========================================"
-
-          echo
-          echo "--- START ---"
-
-          make package/libs/toolchain/compile V=s -j1
-
-          RC=$?
-
-          echo
-          echo "--- TOOLCHAIN COMPILE RETURN CODE ---"
-          echo "$RC"
-
-          echo
-          echo "========================================"
-          echo "=== TOOLCHAIN COMPILE FINISHED ==="
-          echo "========================================"
-
-          exit 0
-
-      # ================================================================
-      # 10. Locate every libgcc_s.so AFTER native toolchain compile
-      #
-      # THIS IS THE MOST IMPORTANT STEP.
-      #
-      # No repair.
-      # ================================================================
-      - name: Locate libgcc_s.so after toolchain compile
+      - name: Locate GCC binaries
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== LOCATE LIBGCC_S.SO AFTER BUILD ==="
+          echo "=== LOCATE GCC BINARIES ==="
           echo "========================================"
 
           echo
-          echo "--- ALL libgcc_s.so UNDER staging_dir ---"
+          echo "--- GCC BINARIES IN STAGING ---"
 
           find staging_dir \
             -type f \
             \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
+              -name '*-gcc' \
+              -o -name '*-g++' \
+              -o -name '*-ld' \
+              -o -name '*-ar' \
+              -o -name '*-ranlib' \
             \) \
             -print \
             2>/dev/null \
             | sort \
-            || true
+            | head -n 500 || true
 
           echo
-          echo "--- ALL libgcc_s.so UNDER build_dir ---"
+          echo "--- GCC BINARIES IN BUILD_DIR ---"
 
           find build_dir \
             -type f \
             \( \
-              -name 'libgcc_s.so' \
-              -o -name 'libgcc_s.so.*' \
+              -name '*-gcc' \
+              -o -name '*-g++' \
+              -o -name '*-ld' \
+              -o -name '*-ar' \
+              -o -name '*-ranlib' \
             \) \
             -print \
             2>/dev/null \
             | sort \
-            || true
-
-          echo
-          echo "--- ALL libgcc_s.so UNDER TOOLCHAIN TREE ---"
-
-          find staging_dir \
-            -type f \
-            -name 'libgcc_s.so*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            || true
-
-          echo
-          echo "--- ALL GCC LIB DIRECTORIES ---"
-
-          find staging_dir build_dir \
-            -type d \
-            \( \
-              -path '*/lib/gcc/*' \
-              -o -path '*/lib64/gcc/*' \
-              -o -path '*/usr/lib/gcc/*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
+            | head -n 500 || true
 
       # ================================================================
-      # 11. Determine actual TOOLCHAIN_DIR
+      # 8. GCC self-report
       #
-      # DIAGNOSTIC ONLY.
+      # This is critical.
+      #
+      # We ask GCC itself where libgcc is supposed to come from.
       # ================================================================
-      - name: Determine actual TOOLCHAIN_DIR
+      - name: GCC self report
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== DETERMINE TOOLCHAIN DIR ==="
+          echo "=== GCC SELF REPORT ==="
           echo "========================================"
 
-          echo
-          echo "--- staging_dir TOOLCHAIN DIRECTORIES ---"
+          GCC=""
 
-          find staging_dir \
-            -maxdepth 2 \
-            -type d \
-            -name 'toolchain-*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            || true
-
-          echo
-          echo "--- DETAILED TOOLCHAIN CONTENTS ---"
-
-          for dir in staging_dir/toolchain-*; do
-            if [ -d "$dir" ]; then
-              echo
-              echo "########################################"
-              echo "TOOLCHAIN_DIR: $dir"
-              echo "########################################"
-
-              echo
-              echo "--- TOP LEVEL ---"
-              find "$dir" \
-                -maxdepth 2 \
-                -print \
-                2>/dev/null \
-                | sort \
-                | head -n 300 \
-                || true
-
-              echo
-              echo "--- lib ---"
-
-              if [ -d "$dir/lib" ]; then
-                ls -la "$dir/lib" || true
-              else
-                echo "$dir/lib: NOT FOUND"
-              fi
-
-              echo
-              echo "--- libgcc candidates ---"
-
-              find "$dir" \
-                -type f \
-                -name 'libgcc*' \
-                -print \
-                2>/dev/null \
-                | sort \
-                || true
+          for candidate in \
+            staging_dir/toolchain-*/bin/*-gcc \
+            staging_dir/toolchain-*/bin/gcc \
+            build_dir/toolchain-*/gcc/*/bin/*-gcc
+          do
+            if [ -x "$candidate" ]; then
+              GCC="$candidate"
+              break
             fi
           done
 
-      # ================================================================
-      # 12. Inspect GCC installation result
-      # ================================================================
-      - name: Inspect GCC installation result
-        shell: bash
-        run: |
-          set -u
-
-          echo "========================================"
-          echo "=== INSPECT GCC INSTALLATION RESULT ==="
-          echo "========================================"
+          if [ -z "$GCC" ]; then
+            echo "GCC binary: NOT FOUND"
+            exit 0
+          fi
 
           echo
-          echo "--- GCC BINARIES IN staging_dir ---"
-
-          find staging_dir \
-            -type f \
-            \( \
-              -name '*gcc' \
-              -o -name '*g++' \
-              -o -name '*gcc-*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
+          echo "--- GCC BINARY ---"
+          echo "$GCC"
 
           echo
-          echo "--- GCC DIRECTORIES IN staging_dir ---"
-
-          find staging_dir \
-            -type d \
-            -iname '*gcc*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
+          echo "--- GCC REAL PATH ---"
+          readlink -f "$GCC" || true
 
           echo
-          echo "--- GCC DIRECTORIES IN build_dir ---"
+          echo "--- GCC VERSION ---"
+          "$GCC" --version || true
 
-          find build_dir \
-            -type d \
-            -iname '*gcc*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
+          echo
+          echo "--- GCC -print-search-dirs ---"
+          "$GCC" -print-search-dirs || true
+
+          echo
+          echo "--- GCC -print-libgcc-file-name ---"
+          "$GCC" -print-libgcc-file-name || true
+
+          echo
+          echo "--- GCC -print-file-name=libgcc.a ---"
+          "$GCC" -print-file-name=libgcc.a || true
+
+          echo
+          echo "--- GCC -print-file-name=libgcc_s.so ---"
+          "$GCC" -print-file-name=libgcc_s.so || true
+
+          echo
+          echo "--- GCC -print-file-name=libgcc_s.so.1 ---"
+          "$GCC" -print-file-name=libgcc_s.so.1 || true
 
       # ================================================================
-      # 13. Inspect toolchain stamps
+      # 9. Search all libgcc artifacts
       #
-      # Critical:
-      # Determine why .built exists even if libgcc_s.so is absent.
+      # IMPORTANT:
+      # We search BOTH staging_dir and build_dir.
       # ================================================================
-      - name: Inspect toolchain stamps
+      - name: Search libgcc artifacts
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== TOOLCHAIN STAMPS ==="
+          echo "=== SEARCH LIBGCC ARTIFACTS ==="
           echo "========================================"
 
           echo
-          echo "--- ALL TOOLCHAIN STAMPS ---"
+          echo "--- libgcc_s.so* ---"
 
-          find build_dir staging_dir \
+          find staging_dir build_dir \
             -type f \
             \( \
-              -name '.*.prepared*' \
-              -o -name '.*.configured*' \
-              -o -name '.*.built*' \
-              -o -name '.*installed*' \
-              -o -name '.*compile*' \
+              -name 'libgcc_s.so' \
+              -o -name 'libgcc_s.so.*' \
             \) \
             -print \
             2>/dev/null \
-            | grep -Ei \
-              'toolchain|gcc|libgcc' \
-            | sort \
-            | head -n 1000 \
-            || true
+            | sort || true
 
           echo
-          echo "--- TOOLCHAIN BUILD DIRECTORY ---"
+          echo "--- libgcc.a ---"
 
-          find build_dir \
-            -maxdepth 6 \
+          find staging_dir build_dir \
             -type f \
-            -path '*/toolchain/.*' \
+            -name 'libgcc.a' \
             -print \
             2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
+            | sort || true
+
+          echo
+          echo "--- libgcc_pic.a ---"
+
+          find staging_dir build_dir \
+            -type f \
+            -name 'libgcc_pic.a' \
+            -print \
+            2>/dev/null \
+            | sort || true
+
+          echo
+          echo "--- libgcc.map ---"
+
+          find staging_dir build_dir \
+            -type f \
+            -name 'libgcc.map' \
+            -print \
+            2>/dev/null \
+            | sort || true
 
       # ================================================================
-      # 14. Inspect generated package directory
+      # 10. Inspect GCC directory structure
       # ================================================================
-      - name: Inspect generated libgcc package state
+      - name: Inspect GCC directory structure
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== LIBGCC PACKAGE STATE ==="
+          echo "=== GCC DIRECTORY STRUCTURE ==="
           echo "========================================"
 
           echo
-          echo "--- PACKAGE OUTPUT DIRECTORY ---"
-
-          find bin/targets \
-            -type f \
-            \( \
-              -iname '*libgcc*' \
-              -o -iname '*gcc*' \
-            \) \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
-
-          echo
-          echo "--- TOOLCHAIN IPKG DIRECTORY ---"
-
-          find build_dir \
-            -type d \
-            -path '*/ipkg-*/*libgcc*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 300 \
-            || true
-
-          echo
-          echo "--- LIBGCC PACKAGE FILES ---"
-
-          find build_dir \
-            -type f \
-            -path '*/ipkg-*/*libgcc*/*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 500 \
-            || true
-
-      # ================================================================
-      # 15. Inspect toolchain compile log evidence
-      #
-      # Search actual generated logs / command traces.
-      # ================================================================
-      - name: Search toolchain compile evidence
-        shell: bash
-        run: |
-          set -u
-
-          echo "========================================"
-          echo "=== TOOLCHAIN COMPILE EVIDENCE ==="
-          echo "========================================"
-
-          echo
-          echo "--- libgcc_s REFERENCES ---"
-
-          grep -Rni \
-            'libgcc_s.so' \
-            build_dir \
-            staging_dir \
-            package/libs/toolchain \
-            2>/dev/null \
-            | head -n 500 \
-            || true
-
-          echo
-          echo "--- GCC INSTALL REFERENCES ---"
-
-          grep -RniE \
-            'install.*libgcc|libgcc.*install|gcc.*install|GCC.*INSTALL' \
-            build_dir \
-            2>/dev/null \
-            | head -n 500 \
-            || true
-
-          echo
-          echo "--- GCC VERSION REFERENCES ---"
-
-          grep -Rni \
-            '14.4.0' \
-            build_dir \
-            2>/dev/null \
-            | head -n 500 \
-            || true
-
-      # ================================================================
-      # 16. Final complete filesystem audit
-      # ================================================================
-      - name: Final GCC toolchain filesystem audit
-        shell: bash
-        run: |
-          set -u
-
-          echo "========================================"
-          echo "=== FINAL GCC TOOLCHAIN AUDIT ==="
-          echo "========================================"
-
-          echo
-          echo "=== IMMORTALWRT COMMIT ==="
-          git rev-parse HEAD
-
-          echo
-          echo "=== PASSWALL-PACKAGES COMMIT ==="
-          git -C package/openwrt-passwall-packages rev-parse HEAD
-
-          echo
-          echo "=== GCC CONFIGURATION ==="
-          grep -n \
-            'CONFIG_GCC_VERSION' \
-            .config \
-            || true
-
-          echo
-          echo "=== TOOLCHAIN DIRECTORIES ==="
+          echo "--- staging_dir/toolchain-* ---"
 
           find staging_dir \
-            -maxdepth 2 \
+            -maxdepth 5 \
+            -type d \
+            -path '*toolchain-*' \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
+
+          echo
+          echo "--- GCC LIB DIRECTORIES ---"
+
+          find staging_dir build_dir \
+            -type d \
+            \( \
+              -path '*/lib/gcc' \
+              -o -path '*/lib/gcc/*' \
+              -o -path '*/lib/gcc/*/*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
+
+          echo
+          echo "--- TOOLCHAIN lib DIRECTORIES ---"
+
+          find staging_dir \
+            -type d \
+            -path '*/toolchain-*/lib' \
+            -print \
+            2>/dev/null \
+            | sort || true
+
+      # ================================================================
+      # 11. Inspect GCC toolchain build state
+      # ================================================================
+      - name: Inspect GCC toolchain build state
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== GCC TOOLCHAIN BUILD STATE ==="
+          echo "========================================"
+
+          echo
+          echo "--- BUILD_DIR TOOLCHAIN DIRECTORIES ---"
+
+          find build_dir \
+            -maxdepth 3 \
             -type d \
             -name 'toolchain-*' \
             -print \
             2>/dev/null \
-            | sort \
-            || true
+            | sort || true
 
           echo
-          echo "=== libgcc_s.so ==="
-
-          find staging_dir build_dir \
-            -type f \
-            -name 'libgcc_s.so*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            || true
-
-          echo
-          echo "=== libgcc ==="
-
-          find staging_dir build_dir \
-            -type f \
-            -name 'libgcc*' \
-            -print \
-            2>/dev/null \
-            | sort \
-            | head -n 1000 \
-            || true
-
-          echo
-          echo "=== TOOLCHAIN STAMPS ==="
+          echo "--- TOOLCHAIN STAMPS ---"
 
           find build_dir staging_dir \
             -type f \
+            \( \
+              -name '.prepared_*' \
+              -o -name '.configured_*' \
+              -o -name '.built' \
+              -o -name '.built_check' \
+              -o -name '.installed' \
+              -o -name '.toolchain_installed' \
+            \) \
+            -print \
             2>/dev/null \
-            | grep -E \
-              '/toolchain/.*\.(prepared|configured|built|installed)|/toolchain/\.' \
             | sort \
-            | head -n 1000 \
-            || true
+            | head -n 1000 || true
 
           echo
-          echo "========================================"
-          echo "=== GCC TOOLCHAIN AUDIT COMPLETE ==="
-          echo "========================================"
+          echo "--- TOOLCHAIN INSTALL STAMPS ---"
+
+          find staging_dir \
+            -type f \
+            -name '*.installed' \
+            -o -name '.toolchain_installed' \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
 
       # ================================================================
-      # 17. Explicit conclusion
+      # 12. Inspect GCC package source
       #
-      # This TEST intentionally does not repair anything.
+      # Diagnostic only.
       # ================================================================
-      - name: Test conclusion
+      - name: Inspect GCC package source
         shell: bash
         run: |
           set -u
 
           echo "========================================"
-          echo "=== TEST CONCLUSION ==="
+          echo "=== INSPECT GCC PACKAGE SOURCE ==="
           echo "========================================"
 
-          if find staging_dir build_dir \
+          echo
+          echo "--- GCC MAKEFILES ---"
+
+          find toolchain \
+            -type f \
+            -name Makefile \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 300 || true
+
+          echo
+          echo "--- GCC REFERENCES ---"
+
+          grep -RniE \
+            'libgcc_s|libgcc_pic|libgcc\.a|TOOLCHAIN_DIR|STAGING_DIR_TOOLCHAIN|gcc-runtime|gcc.*install' \
+            toolchain \
+            --exclude-dir=.git \
+            2>/dev/null \
+            | head -n 1000 || true
+
+      # ================================================================
+      # 13. Inspect toolchain installation logic
+      # ================================================================
+      - name: Inspect toolchain installation logic
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== INSPECT TOOLCHAIN INSTALL LOGIC ==="
+          echo "========================================"
+
+          echo
+          echo "--- TOOLCHAIN INSTALL REFERENCES ---"
+
+          grep -RniE \
+            'STAGING_DIR_TOOLCHAIN|TOOLCHAIN_DIR|toolchain.*install|install.*toolchain|libgcc_s' \
+            include \
+            toolchain \
+            package/libs/toolchain \
+            --exclude-dir=.git \
+            2>/dev/null \
+            | head -n 1500 || true
+
+          echo
+          echo "--- GCC INSTALL COMMAND REFERENCES ---"
+
+          grep -RniE \
+            'install.*libgcc|cp.*libgcc|libgcc.*cp|libgcc.*install' \
+            toolchain \
+            --exclude-dir=.git \
+            2>/dev/null \
+            | head -n 1000 || true
+
+      # ================================================================
+      # 14. Inspect package/libs/toolchain Makefile
+      # ================================================================
+      - name: Inspect libgcc package Makefile
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== INSPECT LIBGCC PACKAGE MAKEFILE ==="
+          echo "========================================"
+
+          echo
+          echo "--- package/libs/toolchain/Makefile ---"
+
+          if [ -f package/libs/toolchain/Makefile ]; then
+
+            nl -ba package/libs/toolchain/Makefile \
+              | sed -n '1,900p'
+
+          else
+
+            echo "package/libs/toolchain/Makefile: NOT FOUND"
+
+          fi
+
+      # ================================================================
+      # 15. Exact TOOLCHAIN_DIR runtime expansion
+      #
+      # Ask make to expose the actual values used by the build.
+      # ================================================================
+      - name: Dump Make variable toolchain paths
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== MAKE VARIABLE TOOLCHAIN PATHS ==="
+          echo "========================================"
+
+          echo
+          echo "--- TOOLCHAIN_DIR ---"
+
+          make -pn 2>/dev/null \
+            | grep -E \
+              '^TOOLCHAIN_DIR[[:space:]]*=' \
+            | head -n 20 || true
+
+          echo
+          echo "--- STAGING_DIR_TOOLCHAIN ---"
+
+          make -pn 2>/dev/null \
+            | grep -E \
+              '^STAGING_DIR_TOOLCHAIN[[:space:]]*=' \
+            | head -n 20 || true
+
+          echo
+          echo "--- GCC_VERSION ---"
+
+          make -pn 2>/dev/null \
+            | grep -E \
+              '^GCC_VERSION[[:space:]]*=' \
+            | head -n 20 || true
+
+          echo
+          echo "--- TARGET_ARCH ---"
+
+          make -pn 2>/dev/null \
+            | grep -E \
+              '^ARCH[[:space:]]*=' \
+            | head -n 20 || true
+
+      # ================================================================
+      # 16. Inspect toolchain directory contents
+      # ================================================================
+      - name: Inspect actual TOOLCHAIN_DIR contents
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== ACTUAL TOOLCHAIN CONTENTS ==="
+          echo "========================================"
+
+          TOOLCHAIN_DIR=""
+
+          TOOLCHAIN_DIR="$(make -pn 2>/dev/null \
+            | sed -n 's/^TOOLCHAIN_DIR[[:space:]]*=[[:space:]]*//p' \
+            | head -n 1 || true)"
+
+          echo
+          echo "TOOLCHAIN_DIR:"
+          echo "${TOOLCHAIN_DIR:-NOT RESOLVED}"
+
+          if [ -n "$TOOLCHAIN_DIR" ] && [ -d "$TOOLCHAIN_DIR" ]; then
+
+            echo
+            echo "--- TOOLCHAIN_DIR ROOT ---"
+            ls -la "$TOOLCHAIN_DIR" || true
+
+            echo
+            echo "--- TOOLCHAIN_DIR/lib ---"
+
+            if [ -d "$TOOLCHAIN_DIR/lib" ]; then
+              ls -la "$TOOLCHAIN_DIR/lib" || true
+            else
+              echo "$TOOLCHAIN_DIR/lib: NOT FOUND"
+            fi
+
+            echo
+            echo "--- TOOLCHAIN_DIR/lib/gcc ---"
+
+            if [ -d "$TOOLCHAIN_DIR/lib/gcc" ]; then
+              find "$TOOLCHAIN_DIR/lib/gcc" \
+                -maxdepth 4 \
+                -print \
+                | sort \
+                | head -n 1000
+            else
+              echo "$TOOLCHAIN_DIR/lib/gcc: NOT FOUND"
+            fi
+
+          else
+
+            echo
+            echo "TOOLCHAIN_DIR does not resolve to an existing directory."
+
+          fi
+
+      # ================================================================
+      # 17. Check GCC runtime generation through GCC itself
+      # ================================================================
+      - name: Check GCC runtime generation
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== CHECK GCC RUNTIME GENERATION ==="
+          echo "========================================"
+
+          GCC=""
+
+          for candidate in \
+            staging_dir/toolchain-*/bin/*-gcc \
+            staging_dir/toolchain-*/bin/gcc
+          do
+            if [ -x "$candidate" ]; then
+              GCC="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$GCC" ]; then
+            echo "GCC binary unavailable."
+            exit 0
+          fi
+
+          echo
+          echo "--- GCC ---"
+          echo "$GCC"
+
+          echo
+          echo "--- GCC LIBGCC FILE ---"
+
+          LIBGCC_FILE="$("$GCC" -print-libgcc-file-name 2>/dev/null || true)"
+
+          echo "$LIBGCC_FILE"
+
+          if [ -n "$LIBGCC_FILE" ] && [ -e "$LIBGCC_FILE" ]; then
+            echo "libgcc runtime/static artifact: FOUND"
+            ls -l "$LIBGCC_FILE"
+          else
+            echo "libgcc artifact reported by GCC: NOT FOUND"
+          fi
+
+          echo
+          echo "--- GCC LIBGCC SEARCH ---"
+
+          "$GCC" -print-search-dirs 2>/dev/null || true
+
+      # ================================================================
+      # 18. Final forensic classification
+      #
+      # IMPORTANT:
+      # This step performs NO repair.
+      # ================================================================
+      - name: Final GCC toolchain conclusion
+        shell: bash
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "=== FINAL GCC TOOLCHAIN CONCLUSION ==="
+          echo "========================================"
+
+          echo
+          echo "--- IMMORTALWRT COMMIT ---"
+          git rev-parse HEAD
+
+          echo
+          echo "--- PASSWALL-PACKAGES COMMIT ---"
+          git -C package/openwrt-passwall-packages rev-parse HEAD
+
+          echo
+          echo "--- GCC VERSION ---"
+          grep -n \
+            'CONFIG_GCC_VERSION' \
+            .config || true
+
+          echo
+          echo "--- TOOLCHAIN DIRECTORIES ---"
+
+          find staging_dir build_dir \
+            -maxdepth 4 \
+            -type d \
+            -name 'toolchain-*' \
+            -print \
+            2>/dev/null \
+            | sort || true
+
+          echo
+          echo "--- libgcc_s.so* COUNT ---"
+
+          LIBGCC_SO_COUNT="$(
+            find staging_dir build_dir \
               -type f \
-              -name 'libgcc_s.so*' \
+              \( \
+                -name 'libgcc_s.so' \
+                -o -name 'libgcc_s.so.*' \
+              \) \
               -print \
               2>/dev/null \
-              | grep -q .; then
+              | wc -l
+          )"
+
+          echo "$LIBGCC_SO_COUNT"
+
+          echo
+          echo "--- libgcc.a COUNT ---"
+
+          LIBGCC_A_COUNT="$(
+            find staging_dir build_dir \
+              -type f \
+              -name 'libgcc.a' \
+              -print \
+              2>/dev/null \
+              | wc -l
+          )"
+
+          echo "$LIBGCC_A_COUNT"
+
+          echo
+          echo "--- TOOLCHAIN STAMPS ---"
+
+          find build_dir staging_dir \
+            -type f \
+            \( \
+              -name '.prepared_*' \
+              -o -name '.configured_*' \
+              -o -name '.built' \
+              -o -name '.built_check' \
+              -o -name '.installed' \
+              -o -name '.toolchain_installed' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 500 || true
+
+          echo
+          echo "========================================"
+          echo "=== FORENSIC INTERPRETATION ==="
+          echo "========================================"
+
+          if [ "$LIBGCC_SO_COUNT" -gt 0 ]; then
 
             echo
             echo "RESULT:"
-            echo "libgcc_s.so WAS FOUND somewhere in the build tree."
+            echo "libgcc_s.so EXISTS somewhere in the build tree."
 
             echo
-            echo "Next step:"
-            echo "Determine why TOOLCHAIN_DIR/lib/libgcc_s.so.*"
-            echo "does not match the actual generated location."
+            echo "NEXT QUESTION:"
+            echo "Determine whether it is outside TOOLCHAIN_DIR/lib."
+
+          elif [ "$LIBGCC_A_COUNT" -gt 0 ]; then
+
+            echo
+            echo "RESULT:"
+            echo "libgcc.a EXISTS, but libgcc_s.so does NOT."
+
+            echo
+            echo "NEXT QUESTION:"
+            echo "Investigate GCC runtime shared-library generation/install."
 
           else
 
             echo
             echo "RESULT:"
-            echo "libgcc_s.so WAS NOT FOUND anywhere in staging_dir/build_dir."
+            echo "Neither libgcc.a nor libgcc_s.so was found."
 
             echo
-            echo "Next step:"
-            echo "Investigate GCC toolchain runtime library generation."
+            echo "NEXT QUESTION:"
+            echo "Investigate GCC toolchain build/generation itself."
 
           fi
 
@@ -809,9 +864,9 @@ jobs:
           echo "No OpenWrt source was modified."
           echo "No PassWall source was modified."
           echo "No sing-box source was modified."
-          echo "No SNAPSHOT master workflow was modified."
+          echo "No SNAPSHOT workflow was modified."
 
           echo
           echo "========================================"
-          echo "=== END ==="
+          echo "=== GCC TOOLCHAIN FORENSIC AUDIT END ==="
           echo "========================================"
