@@ -172,13 +172,13 @@ jobs:
       # ================================================================
       # 7. Build OpenWrt host Ninja
       #
-      # Confirmed previous blocker:
+      # Previous confirmed blocker:
       #
       # staging_dir/host/bin/ninja
       #
       # was missing.
       #
-      # OpenWrt's own tools/ninja target is used.
+      # This OpenWrt-native host tool target fixed that blocker.
       # ================================================================
       - name: Build OpenWrt host Ninja
         shell: bash
@@ -256,7 +256,7 @@ jobs:
       # ================================================================
       # 9. Verify APK host Meson/Ninja
       #
-      # This previously passed after OpenWrt Ninja was built.
+      # This was previously confirmed PASS after Ninja was built.
       # ================================================================
       - name: Verify APK host Meson Ninja
         shell: bash
@@ -287,7 +287,7 @@ jobs:
           echo "APK host compile: PASS"
 
       # ================================================================
-      # 10. Audit OpenSSL host tool
+      # 10. Deep audit OpenWrt host OpenSSL
       #
       # Current confirmed blocker:
       #
@@ -296,19 +296,27 @@ jobs:
       # is missing.
       #
       # IMPORTANT:
-      # Do not install/symlink Ubuntu OpenSSL.
       #
-      # First determine where OpenWrt provides its own host OpenSSL.
+      # DO NOT:
+      #   - install Ubuntu OpenSSL
+      #   - create a symlink
+      #   - modify Sing-box Makefile
+      #   - modify package dependencies
+      #   - guess an OpenSSL compile target
+      #
+      # This step ONLY determines how this ImmortalWrt tree expects
+      # staging_dir/host/bin/openssl to be provided.
       # ================================================================
-      - name: Audit OpenWrt host OpenSSL
+      - name: Deep audit OpenWrt host OpenSSL
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== AUDIT OPENWRT HOST OPENSSL ==="
+          echo "=== DEEP AUDIT OPENWRT HOST OPENSSL ==="
           echo "========================================"
 
+          echo
           echo "--- SYSTEM OPENSSL ---"
 
           if command -v openssl >/dev/null 2>&1; then
@@ -319,175 +327,291 @@ jobs:
           fi
 
           echo
-          echo "--- OPENWRT STAGING OPENSSL ---"
+          echo "--- OPENWRT STAGING BIN DIRECTORY ---"
 
-          if [ -x staging_dir/host/bin/openssl ]; then
-            echo "OpenWrt staging OpenSSL: FOUND"
-            staging_dir/host/bin/openssl version
-            readlink -f staging_dir/host/bin/openssl
+          if [ -d staging_dir/host/bin ]; then
+            ls -la staging_dir/host/bin | head -n 200
           else
-            echo "OpenWrt staging OpenSSL: NOT FOUND"
+            echo "staging_dir/host/bin: NOT FOUND"
           fi
+
+          echo
+          echo "--- OPENWRT STAGING LIB DIRECTORY ---"
+
+          if [ -d staging_dir/host/lib ]; then
+            ls -la staging_dir/host/lib | head -n 200
+          else
+            echo "staging_dir/host/lib: NOT FOUND"
+          fi
+
+          echo
+          echo "--- STAGING OPENSSL FILES ---"
+
+          find staging_dir/host \
+            -maxdepth 5 \
+            -type f \
+            \( \
+              -name 'openssl' \
+              -o -name 'libssl*' \
+              -o -name 'libcrypto*' \
+            \) \
+            -print \
+            | sort \
+            | head -n 300 || true
+
+          echo
+          echo "--- STAGING OPENSSL SYMLINKS ---"
+
+          find staging_dir/host \
+            -maxdepth 5 \
+            -type l \
+            \( \
+              -name 'openssl' \
+              -o -name 'libssl*' \
+              -o -name 'libcrypto*' \
+            \) \
+            -print \
+            -exec ls -l {} \; \
+            | head -n 200 || true
+
+          echo
+          echo "--- BUILD_KEY_APK_SEC ---"
+
+          grep -Rni \
+            'BUILD_KEY_APK_SEC' \
+            include package \
+            --exclude-dir=.git \
+            | head -n 100 || true
+
+          echo
+          echo "--- STAGING OPENSSL REFERENCES ---"
+
+          grep -RniE \
+            'STAGING_DIR_HOST.*/bin/openssl|STAGING_DIR_HOST.*openssl|OPENSSL_DIR' \
+            include tools package \
+            --exclude-dir=.git \
+            | head -n 300 || true
+
+          echo
+          echo "--- OPENSSL HOST REFERENCES ---"
+
+          grep -RniE \
+            'openssl.*host|host.*openssl|openssl.*staging|staging.*openssl' \
+            include tools package \
+            --exclude-dir=.git \
+            | head -n 400 || true
 
           echo
           echo "--- OPENSSL MAKEFILES ---"
 
           find tools package \
             -type f \
-            \( -path '*/openssl/Makefile' \
-            -o -path '*/openssl*/Makefile' \) \
-            -print \
-            | sort \
-            | head -n 100
-
-          echo
-          echo "--- OPENSSL STAGING REFERENCES ---"
-
-          grep -RniE \
-            'STAGING_DIR_HOST.*openssl|staging_dir/host/bin/openssl|INSTALL.*openssl' \
-            tools package include \
-            2>/dev/null \
-            | head -n 100 || true
-
-          echo
-          echo "--- OPENSSL HOST TARGET REFERENCES ---"
-
-          grep -RniE \
-            'openssl.*host|host.*openssl' \
-            tools package include \
-            2>/dev/null \
-            | head -n 150 || true
-
-      # ================================================================
-      # 11. Locate OpenSSL host target
-      #
-      # This step does NOT assume that the target is
-      # "tools/openssl/compile".
-      #
-      # It searches the OpenWrt Make infrastructure for an actual
-      # OpenSSL host target before attempting to build anything.
-      # ================================================================
-      - name: Locate OpenSSL host target
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "=== LOCATE OPENSSL HOST TARGET ==="
-          echo "========================================"
-
-          echo "--- TOOLS DIRECTORY ---"
-
-          find tools \
-            -maxdepth 3 \
-            -type f \
             -name Makefile \
             -print \
             | sort \
-            | grep -Ei 'openssl|host' \
-            | head -n 100 || true
-
-          echo
-          echo "--- PACKAGE MAKEFILE REFERENCES ---"
-
-          grep -RniE \
-            'openssl|OPENSSL' \
-            tools/*/Makefile \
-            package/*/Makefile \
-            2>/dev/null \
-            | head -n 200 || true
-
-          echo
-          echo "--- TARGET CANDIDATES ---"
-
-          find tools package \
-            -type f \
-            -name Makefile \
-            -print \
             | while read -r mf; do
                 if grep -qiE \
-                  'staging_dir/host/bin/openssl|STAGING_DIR_HOST.*openssl|openssl.*HOST_BUILD' \
+                  'openssl|libcrypto|libssl' \
                   "$mf" 2>/dev/null
                 then
                   echo "$mf"
                 fi
               done \
-            | sort -u
+            | head -n 300
+
+          echo
+          echo "--- HOST STAGING STAMPS ---"
+
+          if [ -d staging_dir/host/stamp ]; then
+            find staging_dir/host/stamp \
+              -maxdepth 1 \
+              -type f \
+              -print \
+              | sort \
+              | head -n 300
+          else
+            echo "staging_dir/host/stamp: NOT FOUND"
+          fi
+
+          echo
+          echo "--- OPENSSL RELATED STAMPS ---"
+
+          find staging_dir/host/stamp \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -iname '*ssl*' \
+              -o -iname '*crypto*' \
+              -o -iname '*openssl*' \
+            \) \
+            -print \
+            | sort \
+            || true
+
+          echo
+          echo "--- BUILD DIRECTORY OPENSSL ---"
+
+          find build_dir/host build_dir/hostpkg \
+            -maxdepth 5 \
+            \( \
+              -iname '*openssl*' \
+              -o -iname '*libcrypto*' \
+              -o -iname '*libssl*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | head -n 300 || true
+
+          echo
+          echo "--- OPENSSL PACKAGE DIRECTORIES ---"
+
+          find package \
+            -maxdepth 4 \
+            -type d \
+            \( \
+              -iname '*openssl*' \
+              -o -iname '*ssl*' \
+            \) \
+            -print \
+            | sort \
+            | head -n 300 || true
+
+          echo
+          echo "========================================"
+          echo "=== END OPENSSL DEEP AUDIT ==="
+          echo "========================================"
 
       # ================================================================
-      # 12. Verify actual OpenSSL host target
+      # 11. Inspect package/Makefile APK key generation
       #
-      # We use OpenWrt's Make target only after discovering the relevant
-      # source definition.
-      #
-      # No Ubuntu OpenSSL installation.
-      # No symlink.
-      # No Sing-box Makefile modification.
+      # This isolates the exact rule that caused the previous failure.
       # ================================================================
-      - name: Build OpenWrt host OpenSSL
+      - name: Inspect APK signing key rule
         shell: bash
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "=== BUILD OPENWRT HOST OPENSSL ==="
+          echo "=== INSPECT APK SIGNING KEY RULE ==="
           echo "========================================"
 
-          echo "--- BEFORE BUILD ---"
+          echo "--- package/Makefile: APK KEY RULE ---"
 
-          if [ -x staging_dir/host/bin/openssl ]; then
-            staging_dir/host/bin/openssl version
-          else
-            echo "OpenWrt staging OpenSSL: NOT FOUND"
-          fi
+          nl -ba package/Makefile \
+            | sed -n '45,80p'
 
           echo
-          echo "--- SEARCH KNOWN OPENSSL TARGETS ---"
+          echo "--- ALL OPENSSL INVOCATIONS IN PACKAGE MAKEFILE ---"
 
-          OPENSSL_TARGET=""
-
-          for target in \
-            tools/openssl/compile \
-            package/system/openssl/host/compile \
-            package/libs/openssl/host/compile
-          do
-            if make -n "$target" >/dev/null 2>&1; then
-              OPENSSL_TARGET="$target"
-              echo "FOUND TARGET: $OPENSSL_TARGET"
-              break
-            fi
-          done
-
-          if [ -z "$OPENSSL_TARGET" ]; then
-            echo
-            echo "ERROR: No known OpenSSL host target was found."
-            echo
-            echo "The previous audit output above must be used to identify"
-            echo "the actual OpenWrt host OpenSSL target."
-            exit 1
-          fi
+          grep -n \
+            -C 5 \
+            'STAGING_DIR_HOST.*openssl' \
+            package/Makefile \
+            || true
 
           echo
-          echo "--- BUILD TARGET ---"
-          echo "$OPENSSL_TARGET"
+          echo "--- BUILD KEY VARIABLES ---"
 
-          make "$OPENSSL_TARGET" V=s -j1
-
-          echo
-          echo "--- VERIFY OPENWRT STAGING OPENSSL ---"
-
-          test -x staging_dir/host/bin/openssl
-
-          staging_dir/host/bin/openssl version
-
-          echo
-          echo "OpenSSL path:"
-          readlink -f staging_dir/host/bin/openssl
+          grep -Rni \
+            'BUILD_KEY_APK_' \
+            package include \
+            --exclude-dir=.git \
+            | head -n 100 || true
 
       # ================================================================
-      # 13. Re-test Sing-box after host OpenSSL
+      # 12. Inspect OpenWrt host dependency infrastructure
       #
-      # This is the actual continuation test.
+      # We do not assume an OpenSSL target.
+      # We inspect how host tools are normally registered and staged.
+      # ================================================================
+      - name: Inspect OpenWrt host dependency infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== INSPECT HOST DEPENDENCY SYSTEM ==="
+          echo "========================================"
+
+          echo "--- HOST_BUILD references ---"
+
+          grep -RniE \
+            'HOST_BUILD|Build/Host|Host/Compile|STAGING_DIR_HOST' \
+            include \
+            --exclude-dir=.git \
+            | head -n 400 || true
+
+          echo
+          echo "--- HOST TOOL INSTALL REFERENCES ---"
+
+          grep -RniE \
+            'STAGING_DIR_HOST.*bin/|INSTALL_BIN.*STAGING_DIR_HOST|install.*STAGING_DIR_HOST' \
+            include tools package \
+            --exclude-dir=.git \
+            | head -n 500 || true
+
+          echo
+          echo "--- OPENSSL REFERENCES OUTSIDE PACKAGE DIRECTORIES ---"
+
+          grep -RniE \
+            'openssl|libcrypto|libssl' \
+            include tools \
+            --exclude-dir=.git \
+            | head -n 500 || true
+
+      # ================================================================
+      # 13. Final OpenSSL state report
+      #
+      # This step does not attempt to repair anything.
+      # It records the exact state before the real Sing-box test.
+      # ================================================================
+      - name: Final OpenSSL state report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "=== FINAL OPENSSL STATE ==="
+          echo "========================================"
+
+          echo
+          echo "--- staging_dir/host/bin/openssl ---"
+
+          if [ -x staging_dir/host/bin/openssl ]; then
+            echo "FOUND"
+            readlink -f staging_dir/host/bin/openssl
+            staging_dir/host/bin/openssl version
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo
+          echo "--- staging_dir/host/lib/libcrypto ---"
+
+          find staging_dir/host/lib \
+            -maxdepth 1 \
+            \( \
+              -name 'libcrypto*' \
+              -o -name 'libssl*' \
+            \) \
+            -print \
+            2>/dev/null \
+            | sort \
+            | head -n 100 || true
+
+          echo
+          echo "--- staging_dir/host/bin ---"
+
+          ls -la staging_dir/host/bin \
+            | head -n 200
+
+      # ================================================================
+      # 14. REAL SING-BOX COMPILE TEST
+      #
+      # We intentionally do not repair OpenSSL here.
+      #
+      # The purpose of this run is to expose the exact current blocker
+      # after Ninja + Meson + APK host have been prepared.
       # ================================================================
       - name: Compile Sing-box
         shell: bash
@@ -513,8 +637,16 @@ jobs:
           echo
           echo "--- VERIFY STAGING OPENSSL ---"
 
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
+          if [ -x staging_dir/host/bin/openssl ]; then
+            echo "OpenWrt staging OpenSSL: FOUND"
+            staging_dir/host/bin/openssl version
+          else
+            echo "OpenWrt staging OpenSSL: NOT FOUND"
+            echo
+            echo "WARNING:"
+            echo "The Sing-box target is expected to fail at the APK"
+            echo "signing-key generation stage if OpenSSL is required."
+          fi
 
           echo
           echo "--- SING-BOX MAKEFILE ---"
@@ -549,7 +681,7 @@ jobs:
           echo "========================================"
 
       # ================================================================
-      # 14. Final audit
+      # 15. Final audit
       # ================================================================
       - name: Final audit
         shell: bash
@@ -591,13 +723,12 @@ jobs:
 
           echo
           echo "OpenWrt staging OpenSSL:"
-          test -x staging_dir/host/bin/openssl
-          staging_dir/host/bin/openssl version
 
-          echo
-          echo "APK host:"
-          test -f staging_dir/host/stamp/.apk_installed
-          echo "PASS"
+          if [ -x staging_dir/host/bin/openssl ]; then
+            staging_dir/host/bin/openssl version
+          else
+            echo "NOT FOUND"
+          fi
 
           echo
           echo "========================================"
