@@ -8,7 +8,7 @@
 # 2. [手術植入] 升級 ib v1.8 原生備份工具，解耦套件強依賴，修復 tar 目錄項誤判。
 # 3. [手術植入] 補齊 WireGuard 核心、wg-quick 與 qrencode (QR Code 支援)。
 # 4. [SDC v1.4 Final] 優先使用 OpenWrt Native dumpinfo 解析精準取檔，並保留 Legacy pattern 作為防禦性 Fallback。
-# 5. [GOLANG 1.24 精準鎖定] 將 Go 工具鏈鎖定為 Go 1.24，完美相容 sing-box 1.13.x 並免受 Go 1.27 jsonv2 破壞。
+# 5. [SING-BOX BYPASS] 避開 Go 工具鏈衝突，暫不構建內置 sing-box，交由 PassWall UI 線上組件更新。
 # =====================================================================
 
 name: Build ImmWrt Master Snapshot
@@ -109,13 +109,12 @@ jobs:
           echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
           
-          echo "▶️ [Step] Cloning Passwall ecosystem..."
+          echo "▶️ [Step] Removing upstream conflicting packages..."
           rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
+          
+          echo "▶️ [Step] Cloning Passwall ecosystem..."
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
-          
-          echo "🚀 [Step] Pinning Golang toolchain to stable Go 1.24..."
-          sed -i 's/GO_DEFAULT_VERSION:=.*/GO_DEFAULT_VERSION:=1.24/' feeds/packages/lang/golang/golang-values.mk 2>/dev/null || true
           
           echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
@@ -204,7 +203,6 @@ jobs:
             fi
           }
 
-          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
           sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
           
           set -e
@@ -1489,7 +1487,6 @@ jobs:
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
           CONFIG_PACKAGE_xray-core=y
-          CONFIG_PACKAGE_sing-box=y
           CONFIG_PACKAGE_geoview=y
           CONFIG_PACKAGE_ca-bundle=y
           CONFIG_PACKAGE_ca-certificates=y
@@ -1667,7 +1664,7 @@ jobs:
             - **JSON 韌性升級**：增強 jq 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
             - **WireGuard 依賴補齊**：明確宣告 WireGuard 核心模組、wg-quick 工具及 qrencode。
             - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 優先解析，100% 容忍空白字元漂移，並保留 Legacy pattern 猜測作為防禦性 Fallback 免疫上游目錄結構異常。
-            - **Go 1.24 工具鏈鎖定**：精準指定 Golang 工具鏈為 Go 1.24，滿足 sing-box 1.13.x 需求，同時免疫 Go 1.27 jsonv2 語法破壞。
+            - **Sing-Box 動態託管策略**：取消固化編譯內置 sing-box，還原純粹原生 Golang 工具鏈以成功編譯 geoview 與 PassWall，刷機後可於 PassWall「組件更新」頁面一鍵動態載入 Sing-Box。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
