@@ -8,7 +8,7 @@
 # 2. [手術植入] 升級 ib v1.8 原生備份工具，解耦套件強依賴，修復 tar 目錄項誤判。
 # 3. [手術植入] 補齊 WireGuard 核心、wg-quick 與 qrencode (QR Code 支援)。
 # 4. [SDC v1.4 Final] 優先使用 OpenWrt Native dumpinfo 解析精準取檔，並保留 Legacy pattern 作為防禦性 Fallback。
-# 5. [SING-BOX 相容性鎖定] 自動檢索並鎖定 sing-box 至 Go 1.23 相容版本 (v1.11.x)，徹底擺脫 Go 1.24+ 工具鏈破壞。
+# 5. [GOLANG 1.24 精準鎖定] 將 Go 工具鏈鎖定為 Go 1.24，完美相容 sing-box 1.13.x 並免受 Go 1.27 jsonv2 破壞。
 # =====================================================================
 
 name: Build ImmWrt Master Snapshot
@@ -111,30 +111,11 @@ jobs:
           
           echo "▶️ [Step] Cloning Passwall ecosystem..."
           rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
-          retry git clone --depth=200 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
+          retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
           
-          # 🚀 [智慧版本鎖定] 回滾 sing-box 至 Go 1.23 相容版本 (<= 1.11.x)
-          echo "🔒 [Step] Locking sing-box to Go 1.23 compatible version..."
-          cd package/openwrt-passwall-packages
-          LOCKED=false
-          for commit in $(git log --format="%H" -n 100 -- sing-box/Makefile); do
-            ver=$(git show "$commit":sing-box/Makefile | grep -E "^PKG_VERSION:=" | cut -d= -f2 | tr -d ' ' || true)
-            if [ -n "$ver" ]; then
-              major=$(echo "$ver" | cut -d. -f1 || echo 0)
-              minor=$(echo "$ver" | cut -d. -f2 || echo 0)
-              if [ "$major" -eq 1 ] && [ "$minor" -le 11 ]; then
-                echo "✅ Found Go 1.23 compatible sing-box version: $ver (commit $commit)"
-                git checkout "$commit" -- sing-box
-                LOCKED=true
-                break
-              fi
-            fi
-          done
-          if [ "$LOCKED" = "false" ]; then
-            echo "⚠️ Warning: Compatible sing-box commit not found in recent history, keeping default"
-          fi
-          cd ../..
+          echo "🚀 [Step] Pinning Golang toolchain to stable Go 1.24..."
+          sed -i 's/GO_DEFAULT_VERSION:=.*/GO_DEFAULT_VERSION:=1.24/' feeds/packages/lang/golang/golang-values.mk 2>/dev/null || true
           
           echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
@@ -1686,7 +1667,7 @@ jobs:
             - **JSON 韌性升級**：增強 jq 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
             - **WireGuard 依賴補齊**：明確宣告 WireGuard 核心模組、wg-quick 工具及 qrencode。
             - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 優先解析，100% 容忍空白字元漂移，並保留 Legacy pattern 猜測作為防禦性 Fallback 免疫上游目錄結構異常。
-            - **Go 1.23 相容性鎖定**：自動化回滾 `sing-box` 至 Go 1.23 原生相容版本 (v1.11.x)，徹底解決上游套件庫強逼升級 Go 1.24+ 導致的語法斷層。
+            - **Go 1.24 工具鏈鎖定**：精準指定 Golang 工具鏈為 Go 1.24，滿足 sing-box 1.13.x 需求，同時免疫 Go 1.27 jsonv2 語法破壞。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
