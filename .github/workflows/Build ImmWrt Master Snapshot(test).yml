@@ -8,15 +8,15 @@
 # 2. [手術植入] 升級 ib v1.8 原生備份工具，解耦套件強依賴，修復 tar 目錄項誤判。
 # 3. [手術植入] 補齊 WireGuard 核心、wg-quick 與 qrencode (QR Code 支援)。
 # 4. [SDC v1.4 Final] 優先使用 OpenWrt Native dumpinfo 解析精準取檔，並保留 Legacy pattern 作為防禦性 Fallback。
-# 5. [GO 1.27 修復] 注入 export GOEXPERIMENT=nojsonv2 閉合 Go 1.27 實驗引擎破壞，直通 sing-box 編譯。
+# 5. [SING-BOX 相容性鎖定] 自動檢索並鎖定 sing-box 至 Go 1.23 相容版本 (v1.11.x)，徹底擺脫 Go 1.24+ 工具鏈破壞。
 # =====================================================================
 
 name: Build ImmWrt Master Snapshot
 
 on:
   workflow_dispatch:
-#   schedule:
-#     - cron: '26 14 * * 0,2,4,6' # UTC 14:26 = HKT 22:26 (每週日、二、四、六)
+#  schedule:
+#    - cron: '26 14 * * 0,2,4,6' # UTC 14:26 = HKT 22:26 (每週日、二、四、六)
 
 concurrency:
   group: immwrt-build
@@ -111,8 +111,30 @@ jobs:
           
           echo "▶️ [Step] Cloning Passwall ecosystem..."
           rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
-          retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
+          retry git clone --depth=200 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages
           retry git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall
+          
+          # 🚀 [智慧版本鎖定] 回滾 sing-box 至 Go 1.23 相容版本 (<= 1.11.x)
+          echo "🔒 [Step] Locking sing-box to Go 1.23 compatible version..."
+          cd package/openwrt-passwall-packages
+          LOCKED=false
+          for commit in $(git log --format="%H" -n 100 -- sing-box/Makefile); do
+            ver=$(git show "$commit":sing-box/Makefile | grep -E "^PKG_VERSION:=" | cut -d= -f2 | tr -d ' ' || true)
+            if [ -n "$ver" ]; then
+              major=$(echo "$ver" | cut -d. -f1 || echo 0)
+              minor=$(echo "$ver" | cut -d. -f2 || echo 0)
+              if [ "$major" -eq 1 ] && [ "$minor" -le 11 ]; then
+                echo "✅ Found Go 1.23 compatible sing-box version: $ver (commit $commit)"
+                git checkout "$commit" -- sing-box
+                LOCKED=true
+                break
+              fi
+            fi
+          done
+          if [ "$LOCKED" = "false" ]; then
+            echo "⚠️ Warning: Compatible sing-box commit not found in recent history, keeping default"
+          fi
+          cd ../..
           
           echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
@@ -1537,9 +1559,6 @@ jobs:
           source /tmp/sre_utils.sh
           cd openwrt
           
-          # 🚀 停用 Go 1.27 預設之 jsonv2 實驗引擎，避開 go-json-experiment 衝突
-          export GOEXPERIMENT=nojsonv2
-          
           # 提取最新 component commit timestamp 作為基準
           IMM_DATE=$(git log -1 --format=%ct)
           PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
@@ -1667,7 +1686,7 @@ jobs:
             - **JSON 韌性升級**：增強 jq 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
             - **WireGuard 依賴補齊**：明確宣告 WireGuard 核心模組、wg-quick 工具及 qrencode。
             - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 優先解析，100% 容忍空白字元漂移，並保留 Legacy pattern 猜測作為防禦性 Fallback 免疫上游目錄結構異常。
-            - **Go 1.27 相容性修正**：全局宣告 `GOEXPERIMENT=nojsonv2`，閉合 Go 1.27 破壞性變更，保證 `sing-box` 順利編譯。
+            - **Go 1.23 相容性鎖定**：自動化回滾 `sing-box` 至 Go 1.23 原生相容版本 (v1.11.x)，徹底解決上游套件庫強逼升級 Go 1.24+ 導致的語法斷層。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
