@@ -11,6 +11,7 @@
 # 5. [SDC v1.4 Final] 導入 OpenWrt Native dumpinfo 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；導入可觀測性日誌。
 # 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
 # 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
+# 8. [CCACHE 加速] 導入專屬 ccache-tls-nosingbox- 快取，與標準 TLS 完全隔離。
 # =====================================================================
 
 name: Build 8.0.3TLS-fixed-no-singbox-rust404
@@ -29,6 +30,11 @@ permissions:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  # === 加入 ccache 環境變數 ===
+  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_COMPRESS: 1
+  CCACHE_MAXSIZE: 2G
+  CCACHE_SLOPPINESS: time_macros,file_macro
 
 jobs:
   build:
@@ -1512,9 +1518,11 @@ jobs:
           
       - name: Generate Cache Variables
         id: var
-        run: echo "dl_key=dl-v8.0.3-sdc14-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+        run: |
+          echo "dl_key=dl-v8.0.3-sdc14-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "ccache_key=ccache-tls-nosingbox-${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Restore Cache
+      - name: Restore Cache (dl)
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -1522,6 +1530,14 @@ jobs:
           key: ${{ steps.var.outputs.dl_key }}
           restore-keys: |
             dl-v8.0.3-sdc14-${{ hashFiles('feeds.snapshot.txt') }}-
+            
+      - name: Restore Cache (ccache)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.var.outputs.ccache_key }}
+          restore-keys: |
+            ccache-tls-nosingbox-
             
       - name: Generate Core Config
         run: |
@@ -1581,7 +1597,7 @@ jobs:
             echo "CONFIG_PACKAGE_block-mount=n"
             echo "CONFIG_PACKAGE_luci-app-fstab=n"
             echo "CONFIG_PACKAGE_luci-app-plugins=n"
-            echo "# CONFIG_CCACHE is not set"
+            echo "CONFIG_CCACHE=y"
           } > .config
           
           echo "=== 🔒 Forbidden Package Defconfig Audit ==="
@@ -1647,6 +1663,10 @@ jobs:
           echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
           
+          # === 加入 ccache 編譯環境變數 ===
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          
           FAST_BUILD_STATUS="SUCCESS"
           echo "▶️ [Step] Starting main compilation..."
           if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
@@ -1657,13 +1677,20 @@ jobs:
           fi
           echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
           
-      - name: Save Cache
+      - name: Save Cache (dl)
         uses: actions/cache/save@v4
         if: success() && !cancelled()
         with:
           path: |
             openwrt/dl
           key: ${{ steps.var.outputs.dl_key }}
+          
+      - name: Save Cache (ccache)
+        uses: actions/cache/save@v4
+        if: success() && !cancelled()
+        with:
+          path: ~/.ccache
+          key: ${{ steps.var.outputs.ccache_key }}
 
       - name: Validate & Final Packaging
         run: |
