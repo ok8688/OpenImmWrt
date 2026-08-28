@@ -11,6 +11,7 @@
 # 5. [4G SWAP ARMOR] 完整部署 4G 虛擬記憶體裝甲，徹底免疫大型套件編譯 OOM Kill。
 # 6. [SING-BOX 物理切除] feeds install 後二次通掃物理抹除 sing-box，杜絕自動拉回。
 # 7. [UI 純淨化 + 雙重防線審計] 絕對封殺 luci-app-fstab 與 plugins，但豁免底層 block-mount。
+# 8. [CCACHE 物理隔離] 導入專屬 ccache-snapshot-nosingbox- 快取，徹底阻斷與標準版的快取污染。
 # =====================================================================
 
 name: Build SNAPSHOT-no-singbox
@@ -1468,7 +1469,7 @@ jobs:
         id: var
         run: |
           echo "dl_key=dl-snapshot-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
-          echo "ccache_key=ccache-snapshot-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "ccache_key=ccache-snapshot-nosingbox-${{ hashFiles('feeds.snapshot.txt') }}-$(sha256sum toolchain.info | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Restore DL Cache
         uses: actions/cache/restore@v4
@@ -1487,7 +1488,7 @@ jobs:
           key: ${{ steps.var.outputs.ccache_key }}
           # 🛡️ 嚴格邊界：隔離不同世界線的編譯緩存，不允許泛用 fallback 造成跨版本污染
           restore-keys: |
-            ccache-snapshot-
+            ccache-snapshot-nosingbox-
             
       - name: Generate Core Config
         run: |
