@@ -1547,7 +1547,7 @@ jobs:
             echo "CONFIG_TARGET_x86=y"
             echo "CONFIG_TARGET_x86_64=y"
             echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
-            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=4096"
             echo "CONFIG_TARGET_IMAGES_GZIP=y"
             echo "CONFIG_USE_APK=y"
             echo "CONFIG_PACKAGE_luci-app-passwall=y"
