@@ -12,10 +12,10 @@
 # 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
 # 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
 # 8. [CCACHE 加速] 導入專屬 ccache-tls- 快取，大幅降低 LTS 重新編譯的時間成本。
-# 9. [Rust Precision Fix] 保留 LTS 原生 Rust feed，僅修補 CI LLVM Artifact 404，並記錄完整 Rust provenance。
+# 9. [Rust Precision Fix] 保留 LTS 原生 Rust feed，僅關閉 CI LLVM Artifact 下載，避免 download-ci-llvm 404。
 # =====================================================================
 
-name: Build ImmWrt v8.0.3-LTS
+name: Build 8.0.3-LTS-v8.0.3-rust-precision-fix
 
 on:
   workflow_dispatch:
@@ -31,6 +31,7 @@ permissions:
 
 env:
   DEBIAN_FRONTEND: noninteractive
+  # === 加入 ccache 環境變數 ===
   CCACHE_DIR: /home/runner/.ccache
   CCACHE_COMPRESS: 1
   CCACHE_MAXSIZE: 2G
@@ -152,22 +153,11 @@ jobs:
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
-          # 🔧 Rust Precision Fix (LTS Native Feed)
+          # 🔧 Rust Host Build Fix (CI LLVM Artifact 404)
           # =====================================================
-          # 目的：
-          # 1. 不再漂移拉取 packages/master
-          # 2. 保留 v25.12.1 LTS 原生 packages feed 的 Rust 結構
-          # 3. 僅修補 Rust CI LLVM Artifact 404
-          # 4. 將實際 Rust 版本 / Release / Makefile SHA256 / LLVM 模式寫入 snapshot
-          #
-          # 注意：
-          # - 不修改 Rust 版本
-          # - 不修改 Rust 其他編譯參數
-          # - 不修改 PassWall
-          # - 不修改 sing-box
-          # - 不修改 xray-core
-          # =====================================================
-
+          # Rust 的 download-ci-llvm Artifact 可能因上游清理而返回 404。
+          # 僅關閉 CI LLVM 預建包下載，讓 Rust 在 Runner 本地建立 LLVM。
+          # 不更換 Rust feed、不漂移 packages/master、不修改 Rust 版本。
           RUST_MAKEFILE="feeds/packages/lang/rust/Makefile"
 
           if [ ! -f "$RUST_MAKEFILE" ]; then
@@ -175,54 +165,21 @@ jobs:
             exit 1
           fi
 
-          echo "=== 🔧 Rust Precision Fix ==="
+          sed -i -E \
+            's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/g' \
+            "$RUST_MAKEFILE"
 
-          sed -i -E             's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/g'             "$RUST_MAKEFILE"
-
-          if grep -Eq --             '--set=llvm\.download-ci-llvm=true'             "$RUST_MAKEFILE"; then
+          if grep -Eq -- '--set=llvm\.download-ci-llvm=true' "$RUST_MAKEFILE"; then
             echo "❌ FATAL: Rust download-ci-llvm=true still remains"
             exit 1
           fi
 
-          if ! grep -Eq --             '--set=llvm\.download-ci-llvm=false'             "$RUST_MAKEFILE"; then
-            echo "❌ FATAL: Rust download-ci-llvm=false was not found"
+          if ! grep -Eq -- '--set=llvm\.download-ci-llvm=false' "$RUST_MAKEFILE"; then
+            echo "❌ FATAL: Rust download-ci-llvm=false patch was not applied"
             exit 1
           fi
 
-          RUST_VERSION="$(
-            sed -n               's/^[[:space:]]*PKG_VERSION[[:space:]]*:=//p'               "$RUST_MAKEFILE" |
-              head -n 1
-          )"
-
-          RUST_RELEASE="$(
-            sed -n               's/^[[:space:]]*PKG_RELEASE[[:space:]]*:=//p'               "$RUST_MAKEFILE" |
-              head -n 1
-          )"
-
-          RUST_MAKEFILE_SHA256="$(
-            sha256sum "$RUST_MAKEFILE" |
-            awk '{print $1}'
-          )"
-
-          echo "Rust Version  : ${RUST_VERSION:-unknown}"
-          echo "Rust Release  : ${RUST_RELEASE:-unknown}"
-          echo "Rust Makefile : ${RUST_MAKEFILE_SHA256:-unknown}"
-          echo "LLVM Mode     : download-ci-llvm=false"
-
-          cat > /tmp/rust-provenance.txt << EOF
-          === 🦀 RUST PRECISION FIX ===
-          Rust Makefile: $RUST_MAKEFILE
-          Rust Version: ${RUST_VERSION:-unknown}
-          Rust Release: ${RUST_RELEASE:-unknown}
-          Rust Makefile SHA256: ${RUST_MAKEFILE_SHA256:-unknown}
-          Rust LLVM Mode: download-ci-llvm=false
-          Rust Source: ImmortalWrt v25.12.1 packages feed
-          Rust Modification: CI LLVM Artifact 404 mitigation only
-          EOF
-
-          cat /tmp/rust-provenance.txt
-
-          echo "✅ Rust precision fix completed"
+          echo "✅ Rust host build patch applied: download-ci-llvm=false"
           # =====================================================
 
           # =====================================================
@@ -242,16 +199,19 @@ jobs:
             
             echo "🔒 [SDC v1.4] Adaptive source resolution: $name"
             
+            # 1. POSIX ERE 萬用賦值 Regex 兼容修正 (:=, ?=, =) 並防止雙重定義
             if grep -Eq '^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
               sed -i -E 's/^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=).*/PKG_HASH:=skip/' "$makefile"
             else
               printf '\nPKG_HASH:=skip\n' >> "$makefile"
             fi
 
+            # PKG_MIRROR_HASH 保持原樣或僅清除，不自動盲目賦值
             if grep -Eq '^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
               sed -i -E 's/^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=).*/PKG_MIRROR_HASH:=skip/' "$makefile"
             fi
             
+            # 2. 讓 OpenWrt build system 自己解析 package metadata
             local pkg_source=""
             pkg_source="$(
               make -s "package/${name}/dumpinfo" 2>/dev/null |
@@ -272,6 +232,7 @@ jobs:
               rm -f "dl/$pkg_source"
             fi
             
+            # 3. 觸發實際下載 (強制從上游抓取乾淨 Artifact，並保留錯誤可觀測性)
             if make "package/${name}/download" V=s >"/tmp/sdc-${name}-download.log" 2>&1; then
               echo "✅ $name: download stage completed"
             else
@@ -281,12 +242,14 @@ jobs:
             
             local FILE=""
             
+            # 4. 精準定位 OpenWrt 實際下載 Artifact
             if [ -n "$pkg_source" ]; then
               if [ -f "dl/$pkg_source" ]; then
                 FILE="dl/$pkg_source"
               fi
             fi
             
+            # 5. Legacy / Drift Fallback
             if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
               FILE="$(
                 find dl -maxdepth 1 -type f \
@@ -299,6 +262,7 @@ jobs:
               )"
             fi
             
+            # 6. SHA256 Self-Healing
             if [ -n "$FILE" ] && [ -f "$FILE" ]; then
               local NEW_HASH=""
               NEW_HASH="$(sha256sum "$FILE" | awk '{print $1}')" || true
@@ -322,10 +286,12 @@ jobs:
           echo "🔒 [SDC v1.4] Adaptive mode completed"
           # =====================================================
 
+          # 全域精準破壞前端選單殘留節點 
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
-            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
+            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
           
+          # 結構化 SBOM 生成
           {
             echo "=== 🧬 COMPONENT COMMIT ==="
             echo "ImmortalWrt Commit: $(git rev-parse HEAD)"
@@ -338,8 +304,6 @@ jobs:
               repo=$(dirname "$gitdir")
               echo "$(git -C "$repo" remote get-url origin 2>/dev/null):$(git -C "$repo" rev-parse HEAD)"
             done | sort
-            echo
-            cat /tmp/rust-provenance.txt
           } > ../feeds.snapshot.txt
 
       - name: Inject ImmWrt Backup Tool (ib v1.8)
@@ -397,6 +361,7 @@ jobs:
           "
           readonly OPTIONAL_FILES
 
+          # Decoupled: Configuration backup does not mandate package installation on restore
           MIN_REQUIRED_PACKAGES=""
           readonly MIN_REQUIRED_PACKAGES
 
@@ -431,6 +396,9 @@ jobs:
           }
 
 
+          #
+          # Exact restore whitelist.
+          #
           validate_path()
           {
               case "$1" in
@@ -476,6 +444,10 @@ jobs:
           }
 
 
+          # ============================================================
+          # Error Boundaries
+          # ============================================================
+
           fail_backup()
           {
               rm -f -- "$BACKUP.tmp"
@@ -500,12 +472,19 @@ jobs:
           }
 
 
+          # ============================================================
+          # Signal Traps
+          # ============================================================
+
           trap_backup()
           {
               printf "\n[!] Backup interrupted. Cleaning up...\n"
+
               rm -f -- "$BACKUP.tmp"
+
               safe_rm "$WORK"
               safe_rm "$VERIFY_TEST"
+
               exit 130
           }
 
@@ -513,88 +492,198 @@ jobs:
           trap_restore()
           {
               printf "\n[!] Restore interrupted! Initiating emergency rollback...\n"
+
               if [ -f "$SAFETY/state.txt" ]; then
+
                   if restore_safety_back; then
                       printf "Rollback completed successfully.\n"
+
                       safe_rm "$SAFETY"
                       safe_rm "$WORK"
                   else
-                      printf "CRITICAL: Rollback failed!\n" >&2
+                      printf \
+          "CRITICAL: Rollback failed!
+          CRITICAL: Safety snapshot preserved at %s
+          " "$SAFETY" >&2
                   fi
+
               else
+
+                  printf \
+          "INFO: Restore interrupted before configuration replacement.
+          "
+
                   safe_rm "$SAFETY"
                   safe_rm "$WORK"
               fi
+
               exit 130
           }
 
 
+          # ============================================================
+          # Hardened Archive Validation
+          # ============================================================
+
           verify_archive_members()
           {
               local archive="$1"
-              local listing line type_char member
+              local listing
+              local line
+              local type_char
+              local member
 
               listing="$(tar -tvzf "$archive" 2>/dev/null)" || \
                   fail "Unable to inspect archive members: $archive" 5
 
               while IFS= read -r line; do
+
                   [ -n "$line" ] || continue
+
                   type_char="$(printf '%s' "$line" | cut -c1)"
                   member="$(printf '%s' "$line" | awk '{print $NF}')"
+
                   case "$type_char" in
-                      -|d) ;;
-                      *) fail "Security violation: Unsafe archive entry type ($type_char): $member" 5 ;;
+                      -|d)
+                          ;;
+                      *)
+                          fail \
+          "Security violation: Unsafe archive entry type ($type_char): $member" \
+                              5
+                          ;;
                   esac
+
                   case "$member" in
-                      files|files/*|manifest.txt|checksum.sha256|packages.txt|firmware.info) ;;
-                      *) fail "Security violation: Archive member outside whitelist: $member" 5 ;;
+                      files|files/*|manifest.txt|checksum.sha256|packages.txt|firmware.info)
+                          ;;
+                      *)
+                          fail \
+          "Security violation: Archive member outside whitelist: $member" \
+                              5
+                          ;;
                   esac
+
+                  case "$member" in
+                      /*|../*|*/../*|*/..)
+                          fail \
+          "Security violation: Archive traversal detected: $member" \
+                              5
+                          ;;
+                  esac
+
               done <<ARCHIVE_LISTING
           $listing
           ARCHIVE_LISTING
           }
 
+
+          # ============================================================
+          # Archive ↔ Manifest Exact Verification
+          # ============================================================
 
           verify_archive_exact()
           {
               local archive="$1"
-              local listing member path
+              local listing
+              local member
+              local path
 
-              listing="$(tar -tzf "$archive" 2>/dev/null)" || fail "Unable to enumerate archive members" 5
+              listing="$(tar -tzf "$archive" 2>/dev/null)" || \
+                  fail "Unable to enumerate archive members" 5
 
               while IFS= read -r member; do
+
                   [ -n "$member" ] || continue
+
                   case "$member" in
-                      files/|files/*/) ;;
-                      files/*)
-                          path="/${member#files/}"
-                          grep -Fqx "$path" "$WORK/manifest.parsed" || fail "Security violation: Unmanifested file: $member" 5
+
+                      files/|files/*/)
+                          # Ignore directory entries generated by tar
                           ;;
+
+                      files/*)
+
+                          path="/${member#files/}"
+
+                          grep -Fqx "$path" "$WORK/manifest.parsed" || \
+                              fail \
+          "Security violation: Unmanifested file in archive: $member" \
+                                  5
+                          ;;
+
+                      *)
+                          # Already covered by verify_archive_members()
+                          ;;
+
                   esac
+
               done <<ARCHIVE_LISTING
           $listing
           ARCHIVE_LISTING
           }
 
 
+          # ============================================================
+          # Package / Environment Support
+          # ============================================================
+
           package_installed()
           {
               local pkg="$1"
-              command -v opkg >/dev/null 2>&1 && opkg status "$pkg" 2>/dev/null | grep -q '^Status: install'
+
+              if command -v apk >/dev/null 2>&1; then
+                  apk info -e "$pkg" >/dev/null 2>&1
+                  return $?
+              fi
+
+              if command -v opkg >/dev/null 2>&1; then
+                  opkg status "$pkg" 2>/dev/null |
+                      grep -q '^Status: install'
+                  return $?
+              fi
+
+              return 1
           }
 
+
+          # ============================================================
+          # Firmware Fingerprint
+          # ============================================================
 
           create_firmware_info()
           {
               local rel="/etc/openwrt_release"
+
               {
                   printf "IBB-Version: %s\n" "$VERSION"
-                  printf "Architecture: %s\n" "$(uname -m)"
-                  printf "Distribution: %s\n" "$(grep DISTRIB_ID "$rel" 2>/dev/null | cut -d= -f2 | tr -d "'" || echo "Unknown")"
-                  printf "Version: %s\n" "$(grep DISTRIB_RELEASE "$rel" 2>/dev/null | cut -d= -f2 | tr -d "'" || echo "Unknown")"
-                  printf "Revision: %s\n" "$(grep DISTRIB_REVISION "$rel" 2>/dev/null | cut -d= -f2 | tr -d "'" || echo "Unknown")"
-                  printf "Kernel: %s\n" "$(uname -r)"
-                  printf "Date: %s\n" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+                  printf "Architecture: %s\n" \
+                      "$(uname -m)"
+
+                  printf "Distribution: %s\n" \
+                      "$(grep DISTRIB_ID "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Version: %s\n" \
+                      "$(grep DISTRIB_RELEASE "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Revision: %s\n" \
+                      "$(grep DISTRIB_REVISION "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Kernel: %s\n" \
+                      "$(uname -r)"
+
+                  printf "Date: %s\n" \
+                      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
               } > "$1"
           }
 
@@ -602,212 +691,830 @@ jobs:
           verify_firmware_info()
           {
               local backup_arch
+
               [ -f "firmware.info" ] || return 0
-              backup_arch="$(grep '^Architecture:' firmware.info | cut -d' ' -f2-)"
-              [ "$backup_arch" = "$(uname -m)" ] || fail_restore_preflight "Architecture mismatch" 8
+
+              backup_arch="$(
+                  grep '^Architecture:' firmware.info |
+                  cut -d' ' -f2-
+              )"
+
+              [ "$backup_arch" = "$(uname -m)" ] || \
+                  fail_restore_preflight \
+          "Architecture mismatch (Backup: $backup_arch, System: $(uname -m))" \
+                      8
           }
 
 
-          verify_packages() { return 0; }
+          # ============================================================
+          # Package Compatibility
+          # ============================================================
 
+          verify_packages()
+          {
+              local pkg
+
+              for pkg in $MIN_REQUIRED_PACKAGES; do
+
+                  package_installed "$pkg" || \
+                      fail_restore_preflight \
+          "Missing required dependency: $pkg" \
+                          8
+
+              done
+
+              [ -f "packages.txt" ] || return 0
+
+              awk '
+                  /\[REQUIRED\]/ {
+                      m=1
+                      next
+                  }
+
+                  /^\[/ {
+                      m=0
+                  }
+
+                  m && NF {
+                      print $1
+                  }
+              ' packages.txt |
+              while IFS= read -r pkg; do
+
+                  package_installed "$pkg" || \
+                      printf \
+          "  [WARN] Missing historical package: %s\n" \
+                          "$pkg"
+
+              done
+          }
+
+
+          # ============================================================
+          # Manifest Parsing
+          # ============================================================
 
           read_manifest()
           {
-              awk '/^[[:space:]]*#/ { next } NF == 0 { next } $1 ~ /^\// { print $1 }' manifest.txt > "$WORK/manifest.raw" || fail_restore_preflight "Manifest parse error" 5
+              awk '
+                  /^[[:space:]]*#/ {
+                      next
+                  }
+
+                  NF == 0 {
+                      next
+                  }
+
+                  $1 ~ /^\// {
+                      print $1
+                  }
+              ' manifest.txt > "$WORK/manifest.raw" || \
+                  fail_restore_preflight "Manifest parse error" 5
+
+              sort "$WORK/manifest.raw" |
+                  uniq -d > "$WORK/dups"
+
+              if [ -s "$WORK/dups" ]; then
+                  fail_restore_preflight \
+          "Manifest duplicate entries: $(cat "$WORK/dups")" \
+                      5
+              fi
+
               sort -u "$WORK/manifest.raw" > "$WORK/manifest.parsed"
-              [ -s "$WORK/manifest.parsed" ] || fail_restore_preflight "Manifest empty" 5
+
+              [ -s "$WORK/manifest.parsed" ] || \
+                  fail_restore_preflight "Manifest empty" 5
           }
 
+
+          # ============================================================
+          # Manifest Security Verification
+          # ============================================================
 
           verify_manifest()
           {
               local f
+
               while IFS= read -r f; do
-                  validate_path "$f" || fail_restore_preflight "Path outside whitelist: $f" 5
-                  [ -f "files$f" ] || fail_restore_preflight "Missing archive file: $f" 5
-              done < "$WORK/manifest.parsed"
+
+                  validate_path "$f" || \
+                      fail_restore_preflight \
+          "Path outside restore whitelist: $f" \
+                          5
+
+                  [ -f "files$f" ] || \
+                      fail_restore_preflight \
+          "Missing archive file for manifest entry: $f" \
+                          5
+
+                  done < "$WORK/manifest.parsed"
           }
 
+
+          # ============================================================
+          # Safety Snapshot
+          # ============================================================
 
           restore_safety()
           {
               local f
+
               safe_rm "$SAFETY"
-              mkdir -p "$SAFETY/files" || fail_restore_preflight "Safety dir creation failed" 1
-              : > "$SAFETY/state.txt" || fail_restore_preflight "Safety state creation failed" 1
+
+              mkdir -p "$SAFETY/files" || \
+                  fail_restore_preflight "Safety directory creation failed" 1
+
+              : > "$SAFETY/state.txt" || \
+                  fail_restore_preflight "Safety state creation failed" 1
 
               while IFS= read -r f; do
+
                   if [ -f "$f" ]; then
-                      mkdir -p "$(dirname "$SAFETY/files$f")"
-                      cp -p "$f" "$SAFETY/files$f"
-                      printf "EXIST %s\n" "$f" >> "$SAFETY/state.txt"
+
+                      mkdir -p "$(dirname "$SAFETY/files$f")" || \
+                          fail_restore_preflight \
+          "Safety directory creation failed: $f" \
+                              1
+
+                      cp -p "$f" "$SAFETY/files$f" || \
+                          fail_restore_preflight \
+          "Safety snapshot failed: $f" \
+                              1
+
+                      printf "EXIST %s\n" "$f" \
+                          >> "$SAFETY/state.txt"
+
+                  elif [ -e "$f" ]; then
+
+                      fail_restore_preflight \
+          "INVALID STATE: $f is not a regular file" \
+                          7
+
                   else
-                      printf "MISSING %s\n" "$f" >> "$SAFETY/state.txt"
+
+                      printf "MISSING %s\n" "$f" \
+                          >> "$SAFETY/state.txt"
+
                   fi
+
               done < "$WORK/manifest.parsed"
           }
 
 
+          # ============================================================
+          # Emergency Rollback
+          # ============================================================
+
           restore_safety_back()
           {
-              local status=0 state f tmp
+              local status=0
+              local state
+              local f
+              local tmp
+
               [ -f "$SAFETY/state.txt" ] || return 1
+
               while IFS=' ' read -r state f; do
+
                   case "$state" in
+
                       EXIST)
-                          [ -f "$SAFETY/files$f" ] || { status=1; continue; }
-                          mkdir -p "$(dirname "$f")"
+
+                          if [ ! -f "$SAFETY/files$f" ]; then
+
+                              printf \
+          "CRITICAL: Safety snapshot missing for %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                              continue
+                          fi
+
+                          mkdir -p "$(dirname "$f")" || {
+
+                              printf \
+          "CRITICAL: Rollback directory creation failed for %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                              continue
+                          }
+
                           tmp="${f}.ib-tmp"
-                          cp -p "$SAFETY/files$f" "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; status=1; }
+
+                          rm -f "$tmp"
+
+                          if ! cp -p "$SAFETY/files$f" "$tmp" ||
+                               ! mv -f "$tmp" "$f"; then
+
+                              printf \
+          "CRITICAL: Rollback failed for %s\n" \
+                                  "$f" >&2
+
+                              rm -f "$tmp"
+
+                              status=1
+                          fi
                           ;;
+
                       MISSING)
-                          [ -e "$f" ] && rm -f "$f"
+
+                      if [ -e "$f" ] && ! rm -f "$f"; then
+
+                              printf \
+          "CRITICAL: Failed to remove restored file %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                          fi
                           ;;
+
+                      *)
+                          printf \
+          "CRITICAL: Invalid safety state: %s %s\n" \
+                              "$state" "$f" >&2
+
+                          status=1
+                          ;;
+
                   esac
+
               done < "$SAFETY/state.txt"
+
               [ "$status" -eq 0 ]
           }
 
 
+          # ============================================================
+          # Post-Restore Verification
+          # ============================================================
+
           verify_restored()
           {
-              local f hash_src hash_dst
+              local f
+              local hash_src
+              local hash_dst
+
               while IFS= read -r f; do
-                  [ -f "$f" ] || return 1
-                  hash_src="$(sha256sum "files$f" | cut -d' ' -f1)" || return 1
-                  hash_dst="$(sha256sum "$f" | cut -d' ' -f1)" || return 1
-                  [ "$hash_src" = "$hash_dst" ] || return 1
+
+                  if [ ! -f "$f" ]; then
+
+                      printf \
+          "ERROR: Restored file missing: %s\n" \
+                          "$f" >&2
+
+                      return 1
+                  fi
+
+                  hash_src="$(
+                      sha256sum "files$f" |
+                      cut -d' ' -f1
+                  )" || return 1
+
+                  hash_dst="$(
+                      sha256sum "$f" |
+                      cut -d' ' -f1
+                  )" || return 1
+
+                  if [ "$hash_src" != "$hash_dst" ]; then
+
+                      printf \
+          "ERROR: Restored checksum mismatch: %s\n" \
+                          "$f" >&2
+
+                      return 1
+                  fi
+
               done < "$WORK/manifest.parsed"
+
               return 0
           }
 
 
+          # ============================================================
+          # Target File Collection
+          # ============================================================
+
           get_target_files()
           {
-              local list="" f
+              local list=""
+              local f
+
               for f in $REQUIRED_FILES; do
-                  [ -f "$f" ] || fail "Missing REQUIRED file: $f" 3
+
+                  [ -f "$f" ] || \
+                      fail "Missing REQUIRED file: $f" 3
+
                   list="$list $f"
+
               done
+
               for f in $OPTIONAL_FILES; do
-                  [ -f "$f" ] && list="$list $f"
+
+                  if [ -f "$f" ]; then
+
+                      list="$list $f"
+
+                  else
+
+                      printf \
+          "INFO: Optional file missing, skipping: %s\n" \
+                          "$f" >&2
+
+                  fi
+
               done
+
               echo "$list"
           }
 
 
+          # ============================================================
+          # BACKUP
+          # ============================================================
+
           backup()
           {
               trap trap_backup INT TERM HUP
-              local target_files count=0 f
+
+              local target_files
+              local count=0
+              local f
+
               target_files="$(get_target_files)"
+
               safe_rm "$WORK"
               safe_rm "$VERIFY_TEST"
+
               rm -f -- "$BACKUP.tmp"
-              mkdir -p "$WORK/files" || fail_backup "Workspace creation failed" 1
+
+              mkdir -p "$WORK/files" || \
+                  fail_backup "Workspace creation failed" 1
 
               for f in $target_files; do
-                  mkdir -p "$(dirname "$WORK/files$f")"
-                  cp -p "$f" "$WORK/files$f" || fail_backup "Copy failed: $f" 1
+
+                  mkdir -p "$(dirname "$WORK/files$f")" || \
+                      fail_backup \
+          "Directory creation failed: $f" \
+                          1
+
+                  cp -p "$f" "$WORK/files$f" || \
+                      fail_backup \
+          "Copy failed: $f" \
+                          1
+
                   count=$((count + 1))
+
               done
 
-              cd "$WORK" || fail_backup "Workspace cd failed" 1
+              cd "$WORK" || \
+                  fail_backup "Workspace cd failed" 1
+
 
               {
                   printf "# ImmWrt Backup Manifest\n"
                   printf "# Tool-Version: %s\n" "$VERSION"
-                  for f in $target_files; do printf "%s\n" "$f"; done
-              } > manifest.txt
+                  printf "# Date: %s\n" \
+                      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-              : > checksum.sha256
-              for f in $target_files; do sha256sum "files$f" >> checksum.sha256; done
+                  for f in $target_files; do
+                      printf "%s\n" "$f"
+                  done
 
-              "" > packages.txt
+              } > manifest.txt || \
+                  fail_backup "Manifest creation failed" 1
+
+
+              : > checksum.sha256 || \
+                  fail_backup "Checksum file creation failed" 4
+
+              for f in $target_files; do
+
+                  sha256sum "files$f" >> checksum.sha256 || \
+                      fail_backup \
+          "Checksum calculation failed: $f" \
+                          4
+
+              done
+
+
+              {
+                  printf "[REQUIRED]\n"
+
+                  for f in $MIN_REQUIRED_PACKAGES; do
+                      printf "%s\n" "$f"
+                  done
+
+              } > packages.txt || \
+                  fail_backup "Package metadata creation failed" 1
+
+
               create_firmware_info "firmware.info"
 
-              tar -czf "$BACKUP.tmp" files manifest.txt checksum.sha256 packages.txt firmware.info || fail_backup "Tar compression failed" 1
-              verify_archive_members "$BACKUP.tmp" || fail_backup "Archive member security verification failed" 5
-              mv "$BACKUP.tmp" "$BACKUP" || fail_backup "Atomic replacement failed" 1
+
+              tar -czf "$BACKUP.tmp" \
+                  files \
+                  manifest.txt \
+                  checksum.sha256 \
+                  packages.txt \
+                  firmware.info || \
+                  fail_backup "Tar compression failed" 1
+
+
+              gzip -t "$BACKUP.tmp" || \
+                  fail_backup \
+          "Gzip integrity test failed" \
+                      4
+
+              tar -tzf "$BACKUP.tmp" >/dev/null || \
+                  fail_backup \
+          "Tar header integrity test failed" \
+                      4
+
+
+              mkdir -p "$VERIFY_TEST" || \
+                  fail_backup \
+          "Verification workspace creation failed" \
+                      4
+
+              tar -xzf "$BACKUP.tmp" -C "$VERIFY_TEST" || \
+                  fail_backup \
+          "Secondary extraction failed" \
+                      4
+
+              (
+                  cd "$VERIFY_TEST" || exit 1
+
+                  sha256sum -c checksum.sha256 \
+                      >/dev/null 2>&1
+              ) || {
+
+                  safe_rm "$VERIFY_TEST"
+
+                  fail_backup \
+          "Secondary extraction checksum verification failed" \
+                      4
+              }
+
+              safe_rm "$VERIFY_TEST"
+
+              verify_archive_members "$BACKUP.tmp" || \
+                  fail_backup \
+          "Archive member security verification failed" \
+                      5
+
+              mv "$BACKUP.tmp" "$BACKUP" || \
+                  fail_backup \
+          "Atomic replacement of backup failed" \
+                      1
+
               safe_rm "$WORK"
+
               trap - INT TERM HUP
-              printf "\nBackup completed successfully. (%d files)\n" "$count"
+
+              printf \
+          "\nBackup completed successfully. (%d files)\n" \
+                  "$count"
           }
 
+
+          # ============================================================
+          # RESTORE
+          # ============================================================
 
           restore()
           {
-              local count=0 f tmp
-              [ -f "$BACKUP" ] || fail "Backup not found at $BACKUP" 5
-              verify_archive_members "$BACKUP" || fail_restore_preflight "Archive member security verification failed" 5
+              local count=0
+              local f
+              local tmp
+
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive member security verification failed" \
+                      5
+
               safe_rm "$WORK"
-              mkdir -p "$WORK"
-              tar -xzf "$BACKUP" -C "$WORK" || fail_restore_preflight "Archive extraction failed" 5
-              cd "$WORK" || fail_restore_preflight "Workspace cd failed" 5
+
+              mkdir -p "$WORK" || \
+                  fail_restore_preflight \
+          "Workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" -C "$WORK" || \
+                  fail_restore_preflight \
+          "Archive extraction failed" \
+                      5
+
+              cd "$WORK" || \
+                  fail_restore_preflight \
+          "Workspace cd failed" \
+                      5
+
+              [ -f "manifest.txt" ] || \
+                  fail_restore_preflight \
+          "Manifest missing" \
+                      5
+
+              [ -f "checksum.sha256" ] || \
+                  fail_restore_preflight \
+          "Checksum manifest missing" \
+                      5
 
               read_manifest
+
               verify_manifest
-              verify_archive_exact "$BACKUP" || fail_restore_preflight "Archive exact verification failed" 5
-              sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_restore_preflight "Archive checksum verification failed" 5
+
+              verify_archive_exact "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive exact verification failed" \
+                      5
+
+              sha256sum -c checksum.sha256 \
+                  >/dev/null 2>&1 || \
+                  fail_restore_preflight \
+          "Archive checksum verification failed" \
+                      5
+
               verify_firmware_info
+
+              verify_packages
+
               restore_safety
 
               trap trap_restore INT TERM HUP
+
               while IFS= read -r f; do
-                  mkdir -p "$(dirname "$f")" || { restore_safety_back && fail "Directory creation failed for $f" 6; }
+
+                  mkdir -p "$(dirname "$f")" || {
+
+                      if restore_safety_back; then
+
+                          fail \
+          "Directory creation failed for $f. Rollback successful." \
+                              6
+
+                      else
+
+                          printf \
+          "CRITICAL: Rollback failed!\n" >&2
+
+                          printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                      fi
+                  }
+
                   tmp="${f}.ib-tmp"
+
                   rm -f "$tmp"
-                  cp -p "files$f" "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; restore_safety_back && fail "Atomic replacement failed for $f" 6; }
+
+                  if ! cp -p "files$f" "$tmp" ||
+                       ! mv -f "$tmp" "$f"; then
+
+                      rm -f "$tmp"
+
+                      if restore_safety_back; then
+
+                          fail \
+          "Atomic replacement failed for $f. Rollback successful." \
+                              6
+
+                      else
+
+                          printf \
+          "CRITICAL: Atomic replacement and rollback failed!\n" \
+                              >&2
+
+                          printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                      fi
+                  fi
+
                   count=$((count + 1))
+
               done < "$WORK/manifest.parsed"
 
-              verify_restored || { restore_safety_back && fail "Post-restore verification failed" 6; }
+              if ! verify_restored; then
+
+                  if restore_safety_back; then
+
+                      fail \
+          "Post-restore verification failed. Rollback successful." \
+                          6
+
+                  else
+
+                      printf \
+          "CRITICAL: Post-restore verification AND rollback failed!\n" \
+                          >&2
+
+                      printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                  fi
+              fi
+
               safe_rm "$SAFETY"
               safe_rm "$WORK"
+
               trap - INT TERM HUP
-              printf "Restore completed successfully. (%d files)\n" "$count"
+
+              printf \
+          "Restore completed successfully. (%d files)\n" \
+                  "$count"
+
               exit 0
           }
 
+
+          # ============================================================
+          # VERIFY
+          # ============================================================
 
           verify_cmd()
           {
-              [ -f "$BACKUP" ] || fail "Backup not found at $BACKUP" 5
-              verify_archive_members "$BACKUP" || fail_restore_preflight "Archive member security verification failed" 5
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail \
+          "Archive member security verification failed" \
+                      5
+
+              tar -tzf "$BACKUP" >/dev/null || \
+                  fail \
+          "Archive tar headers corrupted" \
+                      4
+
               safe_rm "$WORK"
-              mkdir -p "$WORK"
-              tar -xzf "$BACKUP" -C "$WORK" || fail_verify "Archive extraction failed" 5
-              cd "$WORK" || fail_verify "Workspace cd failed" 5
+
+              mkdir -p "$WORK" || \
+                  fail_verify \
+          "Verification workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" -C "$WORK" || \
+                  fail_verify \
+          "Archive extraction failed" \
+                      5
+
+              cd "$WORK" || \
+                  fail_verify \
+          "Workspace cd failed" \
+                      5
+
+              [ -f "manifest.txt" ] || \
+                  fail_verify \
+          "Manifest missing" \
+                      5
+
+              [ -f "checksum.sha256" ] || \
+                  fail_verify \
+          "Checksum manifest missing" \
+                      5
+
               read_manifest
+
               verify_manifest
-              verify_archive_exact "$BACKUP" || fail_verify "Archive exact verification failed" 5
-              sha256sum -c checksum.sha256 >/dev/null 2>&1 || fail_verify "Checksum verification failed" 5
+
+              verify_archive_exact "$BACKUP" || \
+                  fail_verify \
+          "Archive exact verification failed" \
+                      5
+
+              sha256sum -c checksum.sha256 \
+                  >/dev/null 2>&1 || \
+                  fail_verify \
+          "Checksum verification failed" \
+                      5
+
               verify_firmware_info
+
+              verify_packages
+
               safe_rm "$WORK"
-              printf "VERIFY SUCCESS: Archive is intact, complete, and compatible.\n"
+
+              printf \
+          "VERIFY SUCCESS: Archive is intact, complete, and compatible.\n"
+
               exit 0
           }
 
+
+          # ============================================================
+          # INFO
+          # ============================================================
 
           info_cmd()
           {
-              [ -f "$BACKUP" ] || fail "Backup not found at $BACKUP" 5
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail \
+          "Archive member security verification failed" \
+                      5
+
               safe_rm "$WORK"
-              mkdir -p "$WORK"
-              tar -xzf "$BACKUP" -C "$WORK" firmware.info 2>/dev/null
-              [ -f "$WORK/firmware.info" ] && cat "$WORK/firmware.info" || printf "Firmware Info: Legacy archive format\n"
+
+              mkdir -p "$WORK" || \
+                  fail \
+          "Info workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" \
+                  -C "$WORK" \
+                  firmware.info \
+                  2>/dev/null
+
+              if [ -f "$WORK/firmware.info" ]; then
+
+                  cat "$WORK/firmware.info"
+
+              else
+
+                  printf \
+          "Firmware Info: Legacy archive format (no firmware.info)\n"
+
+              fi
+
               safe_rm "$WORK"
+
               exit 0
           }
 
 
+          # ============================================================
+          # CLI Dispatcher
+          # ============================================================
+
           case "$1" in
-              b|backup) check_root; backup ;;
-              r|restore) check_root; restore ;;
-              v|verify) check_root; verify_cmd ;;
-              i|info) info_cmd ;;
-              ver|version) printf "ib v%s\n" "$VERSION"; exit 0 ;;
-              *) usage ;;
+
+              b|backup)
+
+                  check_root
+                  backup
+                  ;;
+
+              r|restore)
+
+                  check_root
+                  restore
+                  ;;
+
+              v|verify)
+
+                  check_root
+                  verify_cmd
+                  ;;
+
+              i|info)
+
+                  info_cmd
+                  ;;
+
+              ver|version)
+
+                  printf "ib v%s\n" "$VERSION"
+                  exit 0
+                  ;;
+
+              *)
+
+                  usage
+                  ;;
+
           esac
           IB_SCRIPT
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
@@ -943,6 +1650,7 @@ jobs:
           echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
           
+          # === 加入 ccache 編譯環境變數 ===
           export CC="ccache gcc"
           export CXX="ccache g++"
           
@@ -1047,13 +1755,16 @@ jobs:
           tag_name: v8.0.3-LTS-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
           name: ImmWrt v8.0.3-LTS (TSAR BOMBA SEALED)
           body: |
-            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (Rust Precision Fix)
-            - **Rust 精準修補**：保留 v25.12.1-LTS 原生 Rust feed，不再漂移拉取 `packages/master`；僅將 `download-ci-llvm` 從 `true` 修補為 `false`，避免歷史 CI LLVM Artifact 404，並將 Rust 版本、Release、Makefile SHA256 與 LLVM 模式寫入 `feeds.snapshot`。
+            ### 🔒 v8.0.3-LTS TSAR BOMBA SEALED (SDC v1.4 Final + Explicit APK)
             - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
             - **雙重防線審計 (Final Audit)**：在 Defconfig 與最終固件 Manifest 階段全面導入強制檢查，杜絕 `block-mount`、`luci-app-fstab` 與 `luci-app-plugins` 任何形式的依賴回歸。
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages` 最新 commit。
             - **備份引擎升級**：內建 `ib v1.8` 黃金基準垂直排版版，解耦套件強依賴，確保跨版本配置恢復安全。
-            - **快取綱要嚴格隔離**：`sdc14` Namespace 搭配 `ccache-tls-` 隔離前綴，確保與實驗分支絕對互不干擾。
+            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、密碼學底層模組、`wg-quick` 工具鏈及 `qrencode` (QR Code 支援)。
+            - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE `(:=|\?=|=)` 賦值；導入 SDC 獨立下載狀態的可觀測性日誌 (`tail -n 80`)；保留 `PKG_MIRROR_HASH` 原始語義。
+            - **極致溯源與環境決定性**：將 `openwrt_release` 的提取範圍絕對限縮至 `target-x86_64_musl` 杜絕多目標殘留干擾；升級 4G Swap 建立流程 (`rm -f` 防護) 免疫 Runner Drift。
+            - **快取綱要嚴格隔離**：`sdc14` Namespace 搭配 `feeds.snapshot.txt` 雜湊前綴鎖定 `restore-keys`，達成快照級精準命中與物理隔離。
+            - **Rust LLVM 404 修復**：保留 LTS 原生 Rust feed，僅關閉 `download-ci-llvm`，改由 Runner 本地建構 LLVM，避免上游 CI Artifact 清理造成 404。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
