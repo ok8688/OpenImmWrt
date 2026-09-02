@@ -12,10 +12,10 @@
 # 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
 # 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
 # 8. [CCACHE 加速] 導入專屬 ccache-tls- 快取，大幅降低 LTS 重新編譯的時間成本。
-# 9. [Rust Precision Fix] 保留 LTS 原生 Rust feed，僅關閉 CI LLVM Artifact 下載，避免 download-ci-llvm 404。
+# 9. [Master Rust Transplant] 精準移植 Master 分支的 Rust，恢復 download-ci-llvm 預編譯下載，拒絕本地重編 LLVM。
 # =====================================================================
 
-name: Build 8.0.3-LTS-v8.0.3-rust-precision-fix
+name: Build ImmWrt v8.0.3-LTS
 
 on:
   workflow_dispatch:
@@ -153,33 +153,16 @@ jobs:
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
-          # 🔧 Rust Host Build Fix (CI LLVM Artifact 404)
+          # 🔧 Master Rust Feed Transplant (恢復預編譯下載)
           # =====================================================
-          # Rust 的 download-ci-llvm Artifact 可能因上游清理而返回 404。
-          # 僅關閉 CI LLVM 預建包下載，讓 Rust 在 Runner 本地建立 LLVM。
-          # 不更換 Rust feed、不漂移 packages/master、不修改 Rust 版本。
-          RUST_MAKEFILE="feeds/packages/lang/rust/Makefile"
-
-          if [ ! -f "$RUST_MAKEFILE" ]; then
-            echo "❌ FATAL: Rust Makefile not found: $RUST_MAKEFILE"
-            exit 1
-          fi
-
-          sed -i -E \
-            's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/g' \
-            "$RUST_MAKEFILE"
-
-          if grep -Eq -- '--set=llvm\.download-ci-llvm=true' "$RUST_MAKEFILE"; then
-            echo "❌ FATAL: Rust download-ci-llvm=true still remains"
-            exit 1
-          fi
-
-          if ! grep -Eq -- '--set=llvm\.download-ci-llvm=false' "$RUST_MAKEFILE"; then
-            echo "❌ FATAL: Rust download-ci-llvm=false patch was not applied"
-            exit 1
-          fi
-
-          echo "✅ Rust host build patch applied: download-ci-llvm=false"
+          # 將 LTS 老舊的 Rust 替換為主幹 (master) 最新版本，
+          # 讓系統能成功下載有效的 CI LLVM 預編譯包，徹底避開本地耗時重編。
+          echo "▶️ [Step] Transplanting Rust package from master branch..."
+          rm -rf feeds/packages/lang/rust
+          git clone --depth=1 --single-branch --branch master https://github.com/immortalwrt/packages.git /tmp/packages-master
+          cp -r /tmp/packages-master/lang/rust feeds/packages/lang/rust
+          rm -rf /tmp/packages-master
+          echo "✅ Master Rust successfully transplanted! (download-ci-llvm=true will hit cache)"
           # =====================================================
 
           # =====================================================
@@ -1764,7 +1747,7 @@ jobs:
             - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE `(:=|\?=|=)` 賦值；導入 SDC 獨立下載狀態的可觀測性日誌 (`tail -n 80`)；保留 `PKG_MIRROR_HASH` 原始語義。
             - **極致溯源與環境決定性**：將 `openwrt_release` 的提取範圍絕對限縮至 `target-x86_64_musl` 杜絕多目標殘留干擾；升級 4G Swap 建立流程 (`rm -f` 防護) 免疫 Runner Drift。
             - **快取綱要嚴格隔離**：`sdc14` Namespace 搭配 `feeds.snapshot.txt` 雜湊前綴鎖定 `restore-keys`，達成快照級精準命中與物理隔離。
-            - **Rust LLVM 404 修復**：保留 LTS 原生 Rust feed，僅關閉 `download-ci-llvm`，改由 Runner 本地建構 LLVM，避免上游 CI Artifact 清理造成 404。
+            - **Rust LLVM 404 修復 (Master Transplant)**：將老舊 Rust Feed 替換為主幹最新版本，強制恢復 `download-ci-llvm=true` 下載 CI 預建二進位包，徹底拒絕本地重編 LLVM。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
