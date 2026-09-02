@@ -13,9 +13,10 @@
 # 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
 # 8. [CCACHE 加速] 導入專屬 ccache-tls- 快取，大幅降低 LTS 重新編譯的時間成本。
 # 9. [Master Rust Transplant] 精準移植 Master 分支的 Rust，恢復 download-ci-llvm 預編譯下載，拒絕本地重編 LLVM。
+# 10. [Block-Mount Surgical Strike] 源碼級抹除 block-mount 的 DEFAULT_PACKAGES 與硬依賴，徹底防止 APK 強制復活。
 # =====================================================================
 
-name: Build 8.0.3-LTS-v8.0.3-rust-precision-fix
+name: Build ImmWrt v8.0.3-LTS
 
 on:
   workflow_dispatch:
@@ -155,8 +156,6 @@ jobs:
           # =====================================================
           # 🔧 Master Rust Feed Transplant (恢復預編譯下載)
           # =====================================================
-          # 將 LTS 老舊的 Rust 替換為主幹 (master) 最新版本，
-          # 讓系統能成功下載有效的 CI LLVM 預編譯包，徹底避開本地耗時重編。
           echo "▶️ [Step] Transplanting Rust package from master branch..."
           rm -rf feeds/packages/lang/rust
           git clone --depth=1 --single-branch --branch master https://github.com/immortalwrt/packages.git /tmp/packages-master
@@ -274,6 +273,21 @@ jobs:
             jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
           done
           
+          # =====================================================
+          # 🚀 Surgical Strike: 源碼級抹除 block-mount (防止 APK 強拉)
+          # =====================================================
+          echo "▶️ [Step] Eradicating block-mount from default packages and dependencies..."
+          # 1. 拔除 target DEFAULT_PACKAGES 裡的 block-mount
+          find target/linux include -type f -name "Makefile" -o -name "target.mk" | xargs sed -i 's/block-mount//g' || true
+          
+          # 2. 拔除所有的 +block-mount 依賴 (防止 luci 模組被強制取消或強拉)
+          find feeds package -type f -name "Makefile" | xargs sed -i 's/+block-mount//g' || true
+          
+          # 3. 拔除 Config 中的強選
+          find feeds package -type f -name "Config.in" | xargs sed -i '/select PACKAGE_block-mount/d' || true
+          echo "✅ Block-mount surgically removed from source dependencies."
+          # =====================================================
+
           # 結構化 SBOM 生成
           {
             echo "=== 🧬 COMPONENT COMMIT ==="
@@ -1748,6 +1762,7 @@ jobs:
             - **極致溯源與環境決定性**：將 `openwrt_release` 的提取範圍絕對限縮至 `target-x86_64_musl` 杜絕多目標殘留干擾；升級 4G Swap 建立流程 (`rm -f` 防護) 免疫 Runner Drift。
             - **快取綱要嚴格隔離**：`sdc14` Namespace 搭配 `feeds.snapshot.txt` 雜湊前綴鎖定 `restore-keys`，達成快照級精準命中與物理隔離。
             - **Rust LLVM 404 修復 (Master Transplant)**：將老舊 Rust Feed 替換為主幹最新版本，強制恢復 `download-ci-llvm=true` 下載 CI 預建二進位包，徹底拒絕本地重編 LLVM。
+            - **源碼級物理拔除**：針對 `block-mount` 強行注入至 Manifest 的問題，進行源碼層級的物理抹除手術，拔除其 `DEFAULT_PACKAGES` 與所有模組的強制依賴。
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
