@@ -154,14 +154,21 @@ jobs:
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
-          # 🔧 Master Rust Feed Transplant (恢復預編譯下載)
+          # 🔧 Master Rust & Golang Feed Transplant (突破 LTS 編譯器瓶頸)
           # =====================================================
-          echo "▶️ [Step] Transplanting Rust package from master branch..."
-          rm -rf feeds/packages/lang/rust
+          echo "▶️ [Step] Transplanting Rust and Golang from master branch..."
           retry bash -c 'rm -rf /tmp/packages-master && timeout 20m git clone --depth=1 --single-branch --branch master https://github.com/immortalwrt/packages.git /tmp/packages-master'
+          
+          # 1. 移植 Rust (維持原邏輯)
+          rm -rf feeds/packages/lang/rust
           cp -r /tmp/packages-master/lang/rust feeds/packages/lang/rust
+          
+          # 2. 移植 Golang (修復新版 Xray-core / Sing-box 編譯報錯)
+          rm -rf feeds/packages/lang/golang
+          cp -r /tmp/packages-master/lang/golang feeds/packages/lang/golang
+          
           rm -rf /tmp/packages-master
-          echo "✅ Master Rust successfully transplanted! (嘗試使用 Rust CI 預建 LLVM artifact，而不是本地重編)"
+          echo "✅ Master Rust & Golang successfully transplanted!"
           # =====================================================
 
           # =====================================================
