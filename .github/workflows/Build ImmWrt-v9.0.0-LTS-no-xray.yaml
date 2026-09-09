@@ -13,6 +13,7 @@
 # 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
 # 8. [CCACHE 加速] 導入專屬 ccache-tls- 快取，大幅降低 LTS 重新編譯的時間成本。
 # 9. [Xray Decoupling] 源碼級抹除 xray-core 編譯依賴，交由 PassWall GUI 執行期動態下載二進位檔。
+# 10. [Global Dependency Purge] 全局抹除 block-mount 依賴，杜絕隱式回歸。
 # =====================================================================
 
 name: Build ImmWrt-v9.0.0-LTS-no-xray
@@ -139,17 +140,6 @@ jobs:
           
           echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
-
-          # =====================================================
-          # 🔒 x86 DEFAULT-PACKAGES 防回歸：移除 automount
-          # automount 會依賴 block-mount；僅設定
-          # CONFIG_PACKAGE_block-mount=n 不足以阻止它被 target
-          # 的 DEFAULT_PACKAGES 重新帶入最終 rootfs。
-          # =====================================================
-          if grep -q 'automount' target/linux/x86/Makefile; then
-            sed -i -E 's/[[:space:]]+automount([[:space:]]*)/\\1/g' target/linux/x86/Makefile
-          fi
-          echo "✅ Removed automount from x86 DEFAULT_PACKAGES"
           
           # ✅ 終極物理防護 - 徹底切斷舊版供應鏈，並嚴格拔除不要的插件
           ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-fstab luci-app-plugins || true
@@ -1536,12 +1526,31 @@ jobs:
         run: |
           set -euo pipefail
           cd openwrt
+          
+          # =====================================================
+          # 🚀 Surgical Strike: 全域抹除 block-mount 與 ext4 的依賴綁定
+          # =====================================================
+          echo "▶️ [Step] Eradicating block-mount & ext4 from target defaults..."
+          sed -i 's/block-mount//g' target/linux/x86/Makefile || true
+          sed -i 's/kmod-fs-ext4//g' target/linux/x86/Makefile || true
+          
+          echo "▶️ [Step] Global eradication of block-mount dependencies from all packages..."
+          find package feeds target -name "Makefile" -type f -exec sed -i 's/+block-mount//g' {} + || true
+          find package feeds target -name "Makefile" -type f -exec sed -i 's/+luci-app-fstab//g' {} + || true
+          find package feeds target -name "Makefile" -type f -exec sed -i 's/+kmod-fs-ext4//g' {} + || true
+          # =====================================================
+          
           {
             echo "CONFIG_TARGET_x86=y"
             echo "CONFIG_TARGET_x86_64=y"
             echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
             echo "CONFIG_TARGET_IMAGES_GZIP=y"
+            
+            # 🛑 強制指定檔案系統，阻斷 ext4 帶來的掛載依賴
+            echo "CONFIG_TARGET_ROOTFS_EXT4FS=n"
+            echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
+            
             echo "CONFIG_USE_APK=y"
             echo "CONFIG_PACKAGE_luci-app-passwall=y"
             echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
@@ -1588,14 +1597,13 @@ jobs:
             echo "CONFIG_PACKAGE_kmod-virtio-blk=y"
             echo "CONFIG_PACKAGE_kmod-nft-offload=y"
             echo "CONFIG_PACKAGE_block-mount=n"
-            echo "CONFIG_PACKAGE_automount=n"
             echo "CONFIG_PACKAGE_luci-app-fstab=n"
             echo "CONFIG_PACKAGE_luci-app-plugins=n"
             echo "CONFIG_CCACHE=y"
           } > .config
           
           echo "=== 🔒 Forbidden Package Defconfig Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins xray-core; do
+          for p in block-mount luci-app-fstab luci-app-plugins xray-core; do
             if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
               echo "❌ FORBIDDEN PACKAGE ENABLED IN CONFIG: $p"
               exit 1
@@ -1605,73 +1613,7 @@ jobs:
           
           echo "=== 🔬 WireGuard Package Selection Audit ==="
           grep -iE "CONFIG_PACKAGE_(kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
-          echo "=== 🔒 Running make defconfig with Kconfig failure capture ==="
-
-          if ! make defconfig; then
-            echo
-            echo "============================================================"
-            echo "❌ make defconfig FAILED"
-            echo "============================================================"
-
-            echo
-            echo "=== 🔍 Exact Kconfig failure area ==="
-
-            if [ -f tmp/.config-target.in ]; then
-              echo "--- tmp/.config-target.in lines 325520-325610 ---"
-              nl -ba tmp/.config-target.in | sed -n '325520,325610p'
-            else
-              echo "❌ tmp/.config-target.in does not exist"
-            fi
-
-            echo
-            echo "=== 🔍 Kconfig invalid-statement scan ==="
-
-            if [ -f tmp/.config-target.in ]; then
-              nl -ba tmp/.config-target.in | sed -n '325540,325590p'
-            fi
-
-            echo
-            echo "=== 🔍 Package Config.in files containing relevant symbols ==="
-
-            find package feeds -type f \
-              \( -name "Config.in" -o -name "*.in" \) \
-              -print 2>/dev/null |
-            while read -r f; do
-              grep -nE \
-                'block-mount|automount|luci-app-fstab|luci-app-plugins|xray-core|sing-box|geoview' \
-                "$f" 2>/dev/null &&
-                echo "^^^ SOURCE: $f"
-            done || true
-
-            echo
-            echo "=== 🔍 Recently generated Kconfig files ==="
-
-            find tmp -maxdepth 2 -type f \
-              \( -name "*.in" -o -name "*.mk" \) \
-              -printf '%p\n' 2>/dev/null |
-              sort |
-              tail -n 100
-
-            echo
-            echo "============================================================"
-            echo "❌ STOP: Kconfig parser error captured above."
-            echo "============================================================"
-
-            exit 1
-          fi
-
-          echo "✅ make defconfig passed"
-
-          echo "=== 🔒 Post-Defconfig Forbidden Package Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins xray-core; do
-            if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
-              echo "❌ FORBIDDEN PACKAGE ENABLED AFTER DEFCONFIG: $p"
-              exit 1
-            fi
-          done
-          echo "✅ Post-defconfig forbidden package audit passed"
-
-          ./scripts/diffconfig.sh > ../logs_diffconfig.txt
+          make defconfig && ./scripts/diffconfig.sh > ../logs_diffconfig.txt
           gzip -9f -c .config > ../logs_full.config.gz
           
       - name: Build Firmware
@@ -1765,7 +1707,7 @@ jobs:
           [ -s release_assets/installed-packages.txt ] || rm -f release_assets/installed-packages.txt
           
           echo "=== 🔒 Final Manifest Package Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins xray-core; do
+          for p in block-mount luci-app-fstab luci-app-plugins xray-core; do
             if grep -Eq "^${p} " release_assets/installed-packages.txt; then
               echo "❌ FORBIDDEN PACKAGE FOUND IN FINAL MANIFEST: $p"
               exit 1
@@ -1826,8 +1768,7 @@ jobs:
             - **版本升級**：基於 ImmortalWrt v25.12.2 LTS 正式分支構建。
             - **動態執行期解耦 (Xray-core Eradicated)**：為繞過 LTS 凍結的 Go 工具鏈與最新 Xray 源碼的編譯衝突，已從源碼級物理拔除並禁用 `xray-core` 的編譯依賴。**請於固件刷入後，前往 PassWall -> 「App 更新」頁面，直接線上下載 Xray 核心二進位檔。**
             - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
-            - **三重防線審計 (Final Audit)**：在 Defconfig、Post-Defconfig 與最終固件 Manifest 階段全面導入強制檢查，杜絕 `xray-core`、`automount`、`block-mount`、`luci-app-fstab` 與 `luci-app-plugins` 任何形式的依賴回歸。
-            - **x86 block-mount 根因修復**：移除 x86 target 的 `automount` 預設套件，並同步鎖定 `CONFIG_PACKAGE_automount=n`；避免 `automount → block-mount` 依賴鏈在最終 Manifest 階段把 `block-mount` 重新拉回。
+            - **雙重防線審計 (Final Audit)**：在 Defconfig 與最終固件 Manifest 階段全面導入強制檢查，杜絕 `xray-core`、`block-mount`、`luci-app-fstab` 與 `luci-app-plugins` 任何形式的依賴回歸。
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages` 最新 commit。
             - **備份引擎升級**：內建 `ib v1.8` 黃金基準垂直排版版，解耦套件強依賴，確保跨版本配置恢復安全。
             - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、密碼學底層模組、`wg-quick` 工具鏈及 `qrencode` (QR Code 支援)。
