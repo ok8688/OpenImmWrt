@@ -1605,7 +1605,62 @@ jobs:
           
           echo "=== 🔬 WireGuard Package Selection Audit ==="
           grep -iE "CONFIG_PACKAGE_(kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
-          make defconfig
+          echo "=== 🔒 Running make defconfig with Kconfig failure capture ==="
+
+          if ! make defconfig; then
+            echo
+            echo "============================================================"
+            echo "❌ make defconfig FAILED"
+            echo "============================================================"
+
+            echo
+            echo "=== 🔍 Exact Kconfig failure area ==="
+
+            if [ -f tmp/.config-target.in ]; then
+              echo "--- tmp/.config-target.in lines 325520-325610 ---"
+              nl -ba tmp/.config-target.in | sed -n '325520,325610p'
+            else
+              echo "❌ tmp/.config-target.in does not exist"
+            fi
+
+            echo
+            echo "=== 🔍 Kconfig invalid-statement scan ==="
+
+            if [ -f tmp/.config-target.in ]; then
+              nl -ba tmp/.config-target.in | sed -n '325540,325590p'
+            fi
+
+            echo
+            echo "=== 🔍 Package Config.in files containing relevant symbols ==="
+
+            find package feeds -type f \
+              \( -name "Config.in" -o -name "*.in" \) \
+              -print 2>/dev/null |
+            while read -r f; do
+              grep -nE \
+                'block-mount|automount|luci-app-fstab|luci-app-plugins|xray-core|sing-box|geoview' \
+                "$f" 2>/dev/null &&
+                echo "^^^ SOURCE: $f"
+            done || true
+
+            echo
+            echo "=== 🔍 Recently generated Kconfig files ==="
+
+            find tmp -maxdepth 2 -type f \
+              \( -name "*.in" -o -name "*.mk" \) \
+              -printf '%p\n' 2>/dev/null |
+              sort |
+              tail -n 100
+
+            echo
+            echo "============================================================"
+            echo "❌ STOP: Kconfig parser error captured above."
+            echo "============================================================"
+
+            exit 1
+          fi
+
+          echo "✅ make defconfig passed"
 
           echo "=== 🔒 Post-Defconfig Forbidden Package Audit ==="
           for p in block-mount automount luci-app-fstab luci-app-plugins xray-core; do
