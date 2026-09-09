@@ -1525,12 +1525,25 @@ jobs:
         run: |
           set -euo pipefail
           cd openwrt
+          
+          # =====================================================
+          # 🚀 Surgical Strike: 從 x86 底層架構清單中物理抹除 block-mount 與 ext4 依賴
+          # =====================================================
+          echo "▶️ [Step] Eradicating block-mount from target defaults..."
+          sed -i 's/block-mount//g' target/linux/x86/Makefile
+          sed -i 's/kmod-fs-ext4//g' target/linux/x86/Makefile
+          
           {
             echo "CONFIG_TARGET_x86=y"
             echo "CONFIG_TARGET_x86_64=y"
             echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
             echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
             echo "CONFIG_TARGET_IMAGES_GZIP=y"
+            
+            # 🛑 強制指定檔案系統，阻斷 ext4 帶來的掛載依賴
+            echo "CONFIG_TARGET_ROOTFS_EXT4FS=n"
+            echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y"
+            
             echo "CONFIG_USE_APK=y"
             echo "CONFIG_PACKAGE_luci-app-passwall=y"
             echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
