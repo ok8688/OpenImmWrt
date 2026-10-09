@@ -1,5 +1,5 @@
 # ==== VARIANT CONFIG START ====
-name: Build ImmWrt-v9.0.0-LTS M
+name: Build ImmWrt-v9.0.0-LTS 
 env:
   IMMORTALWRT_VERSION: v25.12.2
   INCLUDE_XRAY: "true"
