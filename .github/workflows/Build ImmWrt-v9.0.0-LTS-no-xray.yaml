@@ -1926,3 +1926,4 @@ jobs:
 # 3. [手術植入] 補齊 WireGuard 核心、bash、qrencode (QR Code 支援)。
 # 4. [SDC v1.4 Final] 優先使用 OpenWrt Native dumpinfo 解析精準取檔，並保留 Legacy pattern 作為防禦性 Fallback。
 # =====================================================================
+
