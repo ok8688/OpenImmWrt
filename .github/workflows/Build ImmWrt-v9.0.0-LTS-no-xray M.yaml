@@ -1,0 +1,2017 @@
+# ==== VARIANT CONFIG START ====
+name: Build ImmWrt-v9.0.0-LTS-no-xray M
+env:
+  IMMORTALWRT_VERSION: v25.12.2
+  INCLUDE_XRAY: "false"
+  CACHE_NS: tls
+  RELEASE_TAG_PREFIX: v9.0.0-LTS
+  RELEASE_TITLE: "ImmWrt v9.0.0-LTS (TSAR BOMBA SEALED)"
+  RELEASE_HEADING: "🔒 v9.0.0-LTS TSAR BOMBA SEALED (Ubuntu 26.04 + Master Rust + SDC v1.4 + Xray Decoupled)"
+  BRANCH_LABEL: v25.12.2-LTS
+# ==== VARIANT CONFIG END ====
+
+on:
+  workflow_dispatch:
+#  schedule:
+#    - cron: '26 14 * * 0,2,4,6' # UTC 14:26 = HKT 22:26 (每週日、二、四、六)
+
+concurrency:
+  group: immwrt-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 360
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_COMPRESS: 1
+      CCACHE_MAXSIZE: 8G
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_SLOPPINESS: time_macros,file_macro
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Generate Metadata
+        id: meta
+        run: echo "date=$(date +%Y%m%d || echo unknown)" >> $GITHUB_OUTPUT
+
+      - name: Inject SRE Core Utilities
+        run: |
+          cat << 'EOF' > /tmp/sre_utils.sh
+          #!/bin/bash
+          set -o pipefail
+          retry() {
+            touch /tmp/retry_history.log /tmp/retry_debug.log
+            local max=5; local delay=2; local n=1
+            local cmd_name="$(printf '%q ' "$@")"
+            
+            while true; do
+              if "$@" >> /tmp/retry_debug.log 2>&1; then
+                echo "✅ Success!"
+                break
+              else
+                if [[ $n -lt $max ]]; then
+                  echo "⚠️ [FAIL] Attempt $n: $cmd_name" >> /tmp/retry_history.log
+                  echo "⚠️ Failed! Retrying in $delay seconds..."
+                  ((n++)); delay=$((delay * 2 + RANDOM % 3)); sleep $delay
+                else
+                  echo "❌ FATAL: Failed after $max retries: $cmd_name"
+                  cat /tmp/retry_history.log
+                  echo "--- LAST 300 LINES OF ERROR LOG ---"
+                  tail -n 300 /tmp/retry_debug.log
+                  return 1
+                fi
+              fi
+            done
+          }
+          EOF
+          chmod +x /tmp/sre_utils.sh
+          
+      - name: Init SRE Environment & ABI Fingerprint
+        run: |
+          set -euo pipefail
+          echo "▶️ [Step] Cleaning up Runner environment..."
+          sudo docker system prune -af || true
+          # SRE 防呆安全網：追加 || true，避免未來 Runner 映像檔變更引發崩潰
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/.ghcup /usr/share/miniconda /usr/local/share/boost /usr/local/share/chromium || true
+          
+          echo "▶️ [Step] Installing dependencies..."
+          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
+          
+          echo "▶️ [Step] Deploying 4G Swap Armor (Deterministic)..."
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          
+          echo "=== 🧬 Deep ABI Fingerprint ===" > toolchain.info
+          echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> toolchain.info
+          echo "Kernel: $(uname -r)" >> toolchain.info
+          echo "GCC: $(gcc --version | head -n1)" >> toolchain.info
+          echo "Clang: $(clang --version | head -n1)" >> toolchain.info
+          echo "Make: $(make --version | head -n1)" >> toolchain.info
+          echo "Ccache: $(ccache --version | head -n1)" >> toolchain.info
+          echo "ld: $(ld --version | head -n1)" >> toolchain.info
+          echo "ldd: $(ldd --version | head -n1)" >> toolchain.info
+          echo "libc6: $(dpkg-query -W -f='${Version}' libc6 2>/dev/null || echo unknown)" >> toolchain.info
+          echo "Go: $(go version 2>/dev/null || echo 'unknown')" >> toolchain.info
+          
+
+      - name: Clone & Official PassWall Main Source (Latest Commit)
+        run: |
+          set -euo pipefail
+          source /tmp/sre_utils.sh
+          
+          echo "▶️ [Step] Cloning ImmortalWrt ${IMMORTALWRT_VERSION} Source..."
+          retry bash -c 'rm -rf openwrt && timeout 20m git clone -b "${IMMORTALWRT_VERSION}" --single-branch --depth 1 https://github.com/immortalwrt/immortalwrt.git openwrt'
+          cd openwrt
+          
+          echo "▶️ [Step] Updating base feeds..."
+          retry timeout 35m ./scripts/feeds update -a
+          
+          # ✅ 終極物理防護 - 徹底切斷舊版供應鏈，並嚴格拔除不要的插件
+          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-fstab luci-app-plugins || true
+          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
+          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
+          
+          echo "▶️ [Step] Cloning Passwall ecosystem (Latest Upstream)..."
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages'
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall'
+            
+          # =====================================================
+          # 🦀 Master Rust Transplant：Ubuntu 24.04 / LTS Toolchain Compatibility
+          # 直接取得 ImmortalWrt packages master 的 Rust package 定義。
+          # =====================================================
+          echo "▶️ [Step] Transplanting Rust package from ImmortalWrt packages master..."
+          rm -rf feeds/packages/lang/rust /tmp/packages-master
+          retry bash -c 'timeout 20m git clone --depth=1 --single-branch --branch master https://github.com/immortalwrt/packages.git /tmp/packages-master'
+          RUST_PACKAGE_COMMIT="$(git -C /tmp/packages-master rev-parse HEAD)"
+          cp -a /tmp/packages-master/lang/rust feeds/packages/lang/rust
+          rm -rf /tmp/packages-master
+          echo "ImmortalWrt packages Rust Commit: $RUST_PACKAGE_COMMIT" > ../rust-package.info
+          echo "✅ Master Rust successfully transplanted: $RUST_PACKAGE_COMMIT"
+          # =====================================================
+
+          # =====================================================
+          # 🔒 x86 DEFAULT-PACKAGES 防回歸：移除 automount
+          # automount 會依賴 block-mount；僅設定 CONFIG_PACKAGE_block-mount=n
+          # 不足以阻止它被 target 的 DEFAULT_PACKAGES 重新帶入最終 rootfs。
+          # =====================================================
+          if grep -q 'automount' target/linux/x86/Makefile; then
+            sed -i -E 's/[[:space:]]+automount([[:space:]]*)/\1/g' target/linux/x86/Makefile
+          fi
+          if grep -q 'automount' target/linux/x86/Makefile; then
+            echo "❌ automount still present in x86 target defaults"
+            exit 1
+          fi
+          echo "✅ Removed automount from x86 DEFAULT_PACKAGES"
+          # =====================================================
+
+          # =====================================================
+          # 🔒 DEFAULT_PACKAGES.tweak：精準移除 block-mount 直接注入
+          # 僅刪除 DEFAULT_PACKAGES.tweak 中的單一 block-mount 行，
+          # 不修改 ext4/squashfs image recipe，也不全域 sed 其他 Makefile。
+          # =====================================================
+          python3 - <<'PY_PATCH'
+          from pathlib import Path
+
+          path = Path("include/target.mk")
+          text = path.read_text()
+          start = text.find("DEFAULT_PACKAGES.tweak:=")
+          if start < 0:
+              raise SystemExit("FATAL: DEFAULT_PACKAGES.tweak not found")
+          end = text.find("\n\n", start)
+          if end < 0:
+              raise SystemExit("FATAL: DEFAULT_PACKAGES.tweak block boundary not found")
+
+          block = text[start:end]
+          lines = block.splitlines(keepends=True)
+          removed = False
+          kept = []
+          for line in lines:
+              if not removed and line.rstrip("\n") == "\tblock-mount \\":
+                  removed = True
+                  continue
+              kept.append(line)
+          if not removed:
+              raise SystemExit("FATAL: expected block-mount entry not found in DEFAULT_PACKAGES.tweak")
+
+          path.write_text(text[:start] + "".join(kept) + text[end:])
+          PY_PATCH
+
+          python3 - <<'PY_VERIFY'
+          from pathlib import Path
+
+          text = Path("include/target.mk").read_text()
+          start = text.find("DEFAULT_PACKAGES.tweak:=")
+          end = text.find("\n\n", start)
+          if start < 0 or end < 0:
+              raise SystemExit("FATAL: unable to locate DEFAULT_PACKAGES.tweak for verification")
+          block = text[start:end]
+          if "\tblock-mount \\" in block:
+              raise SystemExit("FATAL: block-mount still present in DEFAULT_PACKAGES.tweak")
+          if "default-settings-chn" not in block or "kmod-nf-nathelper" not in block or "\tluci" not in block:
+              raise SystemExit("FATAL: DEFAULT_PACKAGES.tweak collateral content missing")
+          PY_VERIFY
+          echo "=== 🔍 DEFAULT_PACKAGES.tweak ==="
+          sed -n '/^DEFAULT_PACKAGES.tweak:=/,/^$/p' include/target.mk
+          echo "✅ Direct block-mount default injection removed; remaining tweak entries preserved."
+          # =====================================================
+
+          echo "▶️ [Step] Installing feeds..."
+          retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
+
+          # =====================================================
+          # 🔒 Stable Drift Control v1.4 (Anti-Stale & Adaptive)
+          # Definition is staged now and executed AFTER DL cache restore.
+          # =====================================================
+          cat > /tmp/sdc.sh <<'SDC_SCRIPT'
+          # =====================================================
+          # 🔒 Stable Drift Control v1.4 (Anti-Stale & Adaptive)
+          # =====================================================
+          set +e
+          
+          sync_hash () {
+            local name="$1"
+            local makefile="$2"
+            local pattern="$3"
+            
+            if [ ! -f "$makefile" ]; then
+              echo "⚠️ $name: Makefile missing, skip"
+              return
+            fi
+            
+            echo "🔒 [SDC v1.4] Adaptive source resolution: $name"
+            
+            # 1. POSIX ERE 萬用賦值 Regex 兼容修正 (:=, ?=, =) 並防止雙重定義
+            if grep -Eq '^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
+              sed -i -E 's/^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=).*/PKG_HASH:=skip/' "$makefile"
+            else
+              printf '\nPKG_HASH:=skip\n' >> "$makefile"
+            fi
+
+            # PKG_MIRROR_HASH 保持原樣或僅清除，不自動盲目賦值
+            if grep -Eq '^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
+              sed -i -E 's/^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=).*/PKG_MIRROR_HASH:=skip/' "$makefile"
+            fi
+            
+            # 2. 讓 OpenWrt build system 自己解析 package metadata
+            local pkg_source=""
+            pkg_source="$(
+              make -s "package/${name}/dumpinfo" 2>/dev/null |
+                sed -n 's/^Source: //p' |
+                head -n 1
+            )" || true
+            
+            pkg_source="$(
+              printf '%s' "$pkg_source" |
+                sed 's/\r$//' |
+                sed 's/^[[:space:]]*//' |
+                sed 's/[[:space:]]*$//'
+            )"
+            
+            if [ -n "$pkg_source" ]; then
+              pkg_source="$(basename -- "$pkg_source")"
+              echo "🧹 [SDC v1.4] Purging stale dl cache for exact source: $pkg_source"
+              rm -f "dl/$pkg_source"
+            fi
+            
+            # 3. 觸發實際下載 (強制從上游抓取乾淨 Artifact，並保留錯誤可觀測性)
+            if make "package/${name}/download" V=s >"/tmp/sdc-${name}-download.log" 2>&1; then
+              echo "✅ $name: download stage completed"
+            else
+              echo "⚠️ $name: download stage failed; continuing with Adaptive Drift"
+              tail -n 80 "/tmp/sdc-${name}-download.log" || true
+            fi
+            
+            local FILE=""
+            
+            # 4. 精準定位 OpenWrt 實際下載 Artifact
+            if [ -n "$pkg_source" ]; then
+              if [ -f "dl/$pkg_source" ]; then
+                FILE="dl/$pkg_source"
+              fi
+            fi
+            
+            # 5. Legacy / Drift Fallback
+            if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+              FILE="$(
+                find dl -maxdepth 1 -type f \
+                  \( -name "${pattern}*.tar.gz" \
+                  -o -name "${pattern}*.tar.xz" \
+                  -o -name "${pattern}*.zip" \) \
+                  -print 2>/dev/null |
+                  sort |
+                  head -n 1
+              )"
+            fi
+            
+            # 6. SHA256 Self-Healing
+            if [ -n "$FILE" ] && [ -f "$FILE" ]; then
+              local NEW_HASH=""
+              NEW_HASH="$(sha256sum "$FILE" | awk '{print $1}')" || true
+              if [ -n "$NEW_HASH" ]; then
+                sed -i -E "s/^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=).*/PKG_HASH:=$NEW_HASH/" "$makefile"
+                echo "✅ $name: Upstream aligned"
+                echo "   Source : $FILE"
+                echo "   SHA256 : $NEW_HASH"
+              else
+                echo "⚠️ $name: SHA256 calculation failed, keeping 'skip'"
+              fi
+            else
+              echo "⚠️ $name: Artifact missing, keeping 'skip' to force build"
+            fi
+          }
+          SDC_SCRIPT
+          chmod +x /tmp/sdc.sh
+
+          # =====================================================
+          # 🚀 Surgical Strike: 源碼級物理抹除 xray-core 依賴 (交由 GUI 內建下載)
+          # 僅在 INCLUDE_XRAY != "true" 時執行
+          # =====================================================
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            echo "▶️ [Step] Eradicating xray-core from PassWall dependencies..."
+            sed -i 's/+PACKAGE_luci-app-passwall_INCLUDE_Xray:xray-core//g' package/openwrt-passwall/luci-app-passwall/Makefile || true
+            sed -i '/config PACKAGE_luci-app-passwall_INCLUDE_Xray/,/config / s/default y/default n/g' package/openwrt-passwall/luci-app-passwall/Makefile || true
+            rm -rf package/openwrt-passwall-packages/xray-core
+            if grep -q '+PACKAGE_luci-app-passwall_INCLUDE_Xray:xray-core' package/openwrt-passwall/luci-app-passwall/Makefile; then
+              echo "❌ xray-core dependency still present after eradication"
+              exit 1
+            fi
+            echo "✅ xray-core physically eradicated from build tree."
+          else
+            echo "ℹ️ INCLUDE_XRAY=true, keeping xray-core in build tree."
+          fi
+          # =====================================================
+
+          # 全域精準破壞前端選單殘留節點 
+          find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
+            jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
+          done
+          
+          # 結構化 SBOM 生成
+          {
+            echo "=== 🧬 COMPONENT COMMIT ==="
+            echo "ImmortalWrt Commit: $(git rev-parse HEAD)"
+            echo "PassWall Commit: $(git -C package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)"
+            echo "PassWall Packages Commit: $(git -C package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)"
+            cat ../rust-package.info 2>/dev/null || true
+          echo "Baseline Patchset: ubuntu26-rust-blockmount-v2"
+          echo "=== 🧬 FEEDS LIST ==="
+            ./scripts/feeds list -f | sort
+            echo "=== 🧬 REPOS STATUS ==="
+            find package -maxdepth 2 -name .git -print0 | while IFS= read -r -d '' gitdir; do
+              repo=$(dirname "$gitdir")
+              echo "$(git -C "$repo" remote get-url origin 2>/dev/null):$(git -C "$repo" rev-parse HEAD)"
+            done | sort
+          } > ../feeds.snapshot.txt
+
+      - name: Inject ImmWrt Backup Tool (ib v1.8)
+        run: |
+          set -e
+          mkdir -p openwrt/package/base-files/files/usr/bin
+          cat << 'IB_SCRIPT' > openwrt/package/base-files/files/usr/bin/ib
+          #!/bin/sh
+
+          VERSION="1.8"
+          readonly VERSION
+
+          BACKUP_DIR="${IBB_BACKUP_DIR:-/root}"
+          readonly BACKUP_DIR
+
+          BACKUP="$BACKUP_DIR/immwrt-backup-latest.tar.gz"
+          readonly BACKUP
+
+          WORK="/tmp/ib-work"
+          readonly WORK
+
+          SAFETY="/tmp/ib-safety"
+          readonly SAFETY
+
+          VERIFY_TEST="/tmp/ib-verify-test"
+          readonly VERIFY_TEST
+
+
+          # ============================================================
+          # Backup Scope
+          # ============================================================
+
+          REQUIRED_FILES="
+          /etc/config/ddns
+          /etc/config/dhcp
+          /etc/config/firewall
+          /etc/config/luci
+          /etc/config/network
+          /etc/config/passwall
+          /etc/config/passwall_server
+          /etc/config/smartdns
+          /etc/config/system
+          /etc/config/upnpd
+          /etc/crontabs/root
+          "
+          readonly REQUIRED_FILES
+
+          OPTIONAL_FILES="
+          /etc/config/argon
+          /etc/passwall/rules/direct_host
+          /etc/passwall/rules/direct_ip
+          /etc/passwall/rules/proxy_host
+          /etc/passwall/rules/proxy_ip
+          "
+          readonly OPTIONAL_FILES
+
+          # Decoupled: Configuration backup does not mandate package installation on restore
+          MIN_REQUIRED_PACKAGES=""
+          readonly MIN_REQUIRED_PACKAGES
+
+
+          # ============================================================
+          # Core Utilities & Safety Boundaries
+          # ============================================================
+
+          fail()
+          {
+              printf "FAILED: %s\n" "$1" >&2
+              exit "${2:-1}"
+          }
+
+
+          safe_rm()
+          {
+              case "$1" in
+                  "$WORK"|"$SAFETY"|"$VERIFY_TEST")
+                      rm -rf -- "$1"
+                      ;;
+                  *)
+                      fail "safe_rm aborted: illegal path $1" 1
+                      ;;
+              esac
+          }
+
+
+          check_root()
+          {
+              [ "$(id -u)" = "0" ] || fail "root required" 1
+          }
+
+
+          #
+          # Exact restore whitelist.
+          #
+          validate_path()
+          {
+              case "$1" in
+                  /etc/config/ddns|\
+                  /etc/config/dhcp|\
+                  /etc/config/firewall|\
+                  /etc/config/luci|\
+                  /etc/config/network|\
+                  /etc/config/passwall|\
+                  /etc/config/passwall_server|\
+                  /etc/config/smartdns|\
+                  /etc/config/system|\
+                  /etc/config/upnpd|\
+                  /etc/crontabs/root|\
+                  /etc/config/argon|\
+                  /etc/passwall/rules/direct_host|\
+                  /etc/passwall/rules/direct_ip|\
+                  /etc/passwall/rules/proxy_host|\
+                  /etc/passwall/rules/proxy_ip)
+                      return 0
+                      ;;
+                  *)
+                      return 1
+                      ;;
+              esac
+          }
+
+
+          usage()
+          {
+              printf \
+          "ImmWrt Backup Tool v%s
+          Usage:
+            ib {b|backup}
+            ib {r|restore}
+            ib {v|verify}
+            ib {i|info}
+            ib {ver|version}
+          \n" "$VERSION"
+
+              exit 2
+          }
+
+
+          # ============================================================
+          # Error Boundaries
+          # ============================================================
+
+          fail_backup()
+          {
+              rm -f -- "$BACKUP.tmp"
+              safe_rm "$WORK"
+              safe_rm "$VERIFY_TEST"
+              fail "$1" "${2:-1}"
+          }
+
+
+          fail_verify()
+          {
+              safe_rm "$WORK"
+              fail "$1" "${2:-1}"
+          }
+
+
+          fail_restore_preflight()
+          {
+              safe_rm "$WORK"
+              safe_rm "$SAFETY"
+              fail "$1" "${2:-1}"
+          }
+
+
+          # ============================================================
+          # Signal Traps
+          # ============================================================
+
+          trap_backup()
+          {
+              printf "\n[!] Backup interrupted. Cleaning up...\n"
+
+              rm -f -- "$BACKUP.tmp"
+
+              safe_rm "$WORK"
+              safe_rm "$VERIFY_TEST"
+
+              exit 130
+          }
+
+
+          trap_restore()
+          {
+              printf "\n[!] Restore interrupted! Initiating emergency rollback...\n"
+
+              if [ -f "$SAFETY/state.txt" ]; then
+
+                  if restore_safety_back; then
+                      printf "Rollback completed successfully.\n"
+
+                      safe_rm "$SAFETY"
+                      safe_rm "$WORK"
+                  else
+                      printf \
+          "CRITICAL: Rollback failed!
+          CRITICAL: Safety snapshot preserved at %s
+          " "$SAFETY" >&2
+                  fi
+
+              else
+
+                  printf \
+          "INFO: Restore interrupted before configuration replacement.
+          "
+
+                  safe_rm "$SAFETY"
+                  safe_rm "$WORK"
+              fi
+
+              exit 130
+          }
+
+
+          # ============================================================
+          # Hardened Archive Validation
+          # ============================================================
+
+          verify_archive_members()
+          {
+              local archive="$1"
+              local listing
+              local line
+              local type_char
+              local member
+
+              listing="$(tar -tvzf "$archive" 2>/dev/null)" || \
+                  fail "Unable to inspect archive members: $archive" 5
+
+              while IFS= read -r line; do
+
+                  [ -n "$line" ] || continue
+
+                  type_char="$(printf '%s' "$line" | cut -c1)"
+                  member="$(printf '%s' "$line" | awk '{print $NF}')"
+
+                  case "$type_char" in
+                      -|d)
+                          ;;
+                      *)
+                          fail \
+          "Security violation: Unsafe archive entry type ($type_char): $member" \
+                              5
+                          ;;
+                  esac
+
+                  case "$member" in
+                      files|files/*|manifest.txt|checksum.sha256|packages.txt|firmware.info)
+                          ;;
+                      *)
+                          fail \
+          "Security violation: Archive member outside whitelist: $member" \
+                              5
+                          ;;
+                  esac
+
+                  case "$member" in
+                      /*|../*|*/../*|*/..)
+                          fail \
+          "Security violation: Archive traversal detected: $member" \
+                              5
+                          ;;
+                  esac
+
+              done <<ARCHIVE_LISTING
+          $listing
+          ARCHIVE_LISTING
+          }
+
+
+          # ============================================================
+          # Archive ↔ Manifest Exact Verification
+          # ============================================================
+
+          verify_archive_exact()
+          {
+              local archive="$1"
+              local listing
+              local member
+              local path
+
+              listing="$(tar -tzf "$archive" 2>/dev/null)" || \
+                  fail "Unable to enumerate archive members" 5
+
+              while IFS= read -r member; do
+
+                  [ -n "$member" ] || continue
+
+                  case "$member" in
+
+                      files/|files/*/)
+                          # Ignore directory entries generated by tar
+                          ;;
+
+                      files/*)
+
+                          path="/${member#files/}"
+
+                          grep -Fqx "$path" "$WORK/manifest.parsed" || \
+                              fail \
+          "Security violation: Unmanifested file in archive: $member" \
+                                  5
+                          ;;
+
+                      *)
+                          # Already covered by verify_archive_members()
+                          ;;
+
+                  esac
+
+              done <<ARCHIVE_LISTING
+          $listing
+          ARCHIVE_LISTING
+          }
+
+
+          # ============================================================
+          # Package / Environment Support
+          # ============================================================
+
+          package_installed()
+          {
+              local pkg="$1"
+
+              if command -v apk >/dev/null 2>&1; then
+                  apk info -e "$pkg" >/dev/null 2>&1
+                  return $?
+              fi
+
+              if command -v opkg >/dev/null 2>&1; then
+                  opkg status "$pkg" 2>/dev/null |
+                      grep -q '^Status: install'
+                  return $?
+              fi
+
+              return 1
+          }
+
+
+          # ============================================================
+          # Firmware Fingerprint
+          # ============================================================
+
+          create_firmware_info()
+          {
+              local rel="/etc/openwrt_release"
+
+              {
+                  printf "IBB-Version: %s\n" "$VERSION"
+
+                  printf "Architecture: %s\n" \
+                      "$(uname -m)"
+
+                  printf "Distribution: %s\n" \
+                      "$(grep DISTRIB_ID "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Version: %s\n" \
+                      "$(grep DISTRIB_RELEASE "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Revision: %s\n" \
+                      "$(grep DISTRIB_REVISION "$rel" 2>/dev/null |
+                          cut -d= -f2 |
+                          tr -d "'" ||
+                          echo "Unknown")"
+
+                  printf "Kernel: %s\n" \
+                      "$(uname -r)"
+
+                  printf "Date: %s\n" \
+                      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+              } > "$1"
+          }
+
+
+          verify_firmware_info()
+          {
+              local backup_arch
+
+              [ -f "firmware.info" ] || return 0
+
+              backup_arch="$(
+                  grep '^Architecture:' firmware.info |
+                  cut -d' ' -f2-
+              )"
+
+              [ "$backup_arch" = "$(uname -m)" ] || \
+                  fail_restore_preflight \
+          "Architecture mismatch (Backup: $backup_arch, System: $(uname -m))" \
+                      8
+          }
+
+
+          # ============================================================
+          # Package Compatibility
+          # ============================================================
+
+          verify_packages()
+          {
+              local pkg
+
+              for pkg in $MIN_REQUIRED_PACKAGES; do
+
+                  package_installed "$pkg" || \
+                      fail_restore_preflight \
+          "Missing required dependency: $pkg" \
+                          8
+
+              done
+
+              [ -f "packages.txt" ] || return 0
+
+              awk '
+                  /\[REQUIRED\]/ {
+                      m=1
+                      next
+                  }
+
+                  /^\[/ {
+                      m=0
+                  }
+
+                  m && NF {
+                      print $1
+                  }
+              ' packages.txt |
+              while IFS= read -r pkg; do
+
+                  package_installed "$pkg" || \
+                      printf \
+          "  [WARN] Missing historical package: %s\n" \
+                          "$pkg"
+
+              done
+          }
+
+
+          # ============================================================
+          # Manifest Parsing
+          # ============================================================
+
+          read_manifest()
+          {
+              awk '
+                  /^[[:space:]]*#/ {
+                      next
+                  }
+
+                  NF == 0 {
+                      next
+                  }
+
+                  $1 ~ /^\// {
+                      print $1
+                  }
+              ' manifest.txt > "$WORK/manifest.raw" || \
+                  fail_restore_preflight "Manifest parse error" 5
+
+              sort "$WORK/manifest.raw" |
+                  uniq -d > "$WORK/dups"
+
+              if [ -s "$WORK/dups" ]; then
+                  fail_restore_preflight \
+          "Manifest duplicate entries: $(cat "$WORK/dups")" \
+                      5
+              fi
+
+              sort -u "$WORK/manifest.raw" > "$WORK/manifest.parsed"
+
+              [ -s "$WORK/manifest.parsed" ] || \
+                  fail_restore_preflight "Manifest empty" 5
+          }
+
+
+          # ============================================================
+          # Manifest Security Verification
+          # ============================================================
+
+          verify_manifest()
+          {
+              local f
+
+              while IFS= read -r f; do
+
+                  validate_path "$f" || \
+                      fail_restore_preflight \
+          "Path outside restore whitelist: $f" \
+                          5
+
+                  [ -f "files$f" ] || \
+                      fail_restore_preflight \
+          "Missing archive file for manifest entry: $f" \
+                          5
+
+                  done < "$WORK/manifest.parsed"
+          }
+
+
+          # ============================================================
+          # Safety Snapshot
+          # ============================================================
+
+          restore_safety()
+          {
+              local f
+
+              safe_rm "$SAFETY"
+
+              mkdir -p "$SAFETY/files" || \
+                  fail_restore_preflight "Safety directory creation failed" 1
+
+              : > "$SAFETY/state.txt" || \
+                  fail_restore_preflight "Safety state creation failed" 1
+
+              while IFS= read -r f; do
+
+                  if [ -f "$f" ]; then
+
+                      mkdir -p "$(dirname "$SAFETY/files$f")" || \
+                          fail_restore_preflight \
+          "Safety directory creation failed: $f" \
+                              1
+
+                      cp -p "$f" "$SAFETY/files$f" || \
+                          fail_restore_preflight \
+          "Safety snapshot failed: $f" \
+                              1
+
+                      printf "EXIST %s\n" "$f" \
+                          >> "$SAFETY/state.txt"
+
+                  elif [ -e "$f" ]; then
+
+                      fail_restore_preflight \
+          "INVALID STATE: $f is not a regular file" \
+                          7
+
+                  else
+
+                      printf "MISSING %s\n" "$f" \
+                          >> "$SAFETY/state.txt"
+
+                  fi
+
+              done < "$WORK/manifest.parsed"
+          }
+
+
+          # ============================================================
+          # Emergency Rollback
+          # ============================================================
+
+          restore_safety_back()
+          {
+              local status=0
+              local state
+              local f
+              local tmp
+
+              [ -f "$SAFETY/state.txt" ] || return 1
+
+              while IFS=' ' read -r state f; do
+
+                  case "$state" in
+
+                      EXIST)
+
+                          if [ ! -f "$SAFETY/files$f" ]; then
+
+                              printf \
+          "CRITICAL: Safety snapshot missing for %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                              continue
+                          fi
+
+                          mkdir -p "$(dirname "$f")" || {
+
+                              printf \
+          "CRITICAL: Rollback directory creation failed for %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                              continue
+                          }
+
+                          tmp="${f}.ib-tmp"
+
+                          rm -f "$tmp"
+
+                          if ! cp -p "$SAFETY/files$f" "$tmp" ||
+                               ! mv -f "$tmp" "$f"; then
+
+                              printf \
+          "CRITICAL: Rollback failed for %s\n" \
+                                  "$f" >&2
+
+                              rm -f "$tmp"
+
+                              status=1
+                          fi
+                          ;;
+
+                      MISSING)
+
+                          if [ -e "$f" ] && ! rm -f "$f"; then
+
+                              printf \
+          "CRITICAL: Failed to remove restored file %s\n" \
+                                  "$f" >&2
+
+                              status=1
+                          fi
+                          ;;
+
+                      *)
+
+                          printf \
+          "CRITICAL: Invalid safety state: %s %s\n" \
+                              "$state" "$f" >&2
+
+                          status=1
+                          ;;
+
+                  esac
+
+              done < "$SAFETY/state.txt"
+
+              [ "$status" -eq 0 ]
+          }
+
+
+          # ============================================================
+          # Post-Restore Verification
+          # ============================================================
+
+          verify_restored()
+          {
+              local f
+              local hash_src
+              local hash_dst
+
+              while IFS= read -r f; do
+
+                  if [ ! -f "$f" ]; then
+
+                      printf \
+          "ERROR: Restored file missing: %s\n" \
+                          "$f" >&2
+
+                      return 1
+                  fi
+
+                  hash_src="$(
+                      sha256sum "files$f" |
+                      cut -d' ' -f1
+                  )" || return 1
+
+                  hash_dst="$(
+                      sha256sum "$f" |
+                      cut -d' ' -f1
+                  )" || return 1
+
+                  if [ "$hash_src" != "$hash_dst" ]; then
+
+                      printf \
+          "ERROR: Restored checksum mismatch: %s\n" \
+                          "$f" >&2
+
+                      return 1
+                  fi
+
+              done < "$WORK/manifest.parsed"
+
+              return 0
+          }
+
+
+          # ============================================================
+          # Target File Collection
+          # ============================================================
+
+          get_target_files()
+          {
+              local list=""
+              local f
+
+              for f in $REQUIRED_FILES; do
+
+                  [ -f "$f" ] || \
+                      fail "Missing REQUIRED file: $f" 3
+
+                  list="$list $f"
+
+              done
+
+              for f in $OPTIONAL_FILES; do
+
+                  if [ -f "$f" ]; then
+
+                      list="$list $f"
+
+                  else
+
+                      printf \
+          "INFO: Optional file missing, skipping: %s\n" \
+                          "$f" >&2
+
+                  fi
+
+              done
+
+              echo "$list"
+          }
+
+
+          # ============================================================
+          # BACKUP
+          # ============================================================
+
+          backup()
+          {
+              trap trap_backup INT TERM HUP
+
+              local target_files
+              local count=0
+              local f
+
+              target_files="$(get_target_files)"
+
+              safe_rm "$WORK"
+              safe_rm "$VERIFY_TEST"
+
+              rm -f -- "$BACKUP.tmp"
+
+              mkdir -p "$WORK/files" || \
+                  fail_backup "Workspace creation failed" 1
+
+              for f in $target_files; do
+
+                  mkdir -p "$(dirname "$WORK/files$f")" || \
+                      fail_backup \
+          "Directory creation failed: $f" \
+                          1
+
+                  cp -p "$f" "$WORK/files$f" || \
+                      fail_backup \
+          "Copy failed: $f" \
+                          1
+
+                  count=$((count + 1))
+
+              done
+
+              cd "$WORK" || \
+                  fail_backup "Workspace cd failed" 1
+
+
+              {
+                  printf "# ImmWrt Backup Manifest\n"
+                  printf "# Tool-Version: %s\n" "$VERSION"
+                  printf "# Date: %s\n" \
+                      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+                  for f in $target_files; do
+                      printf "%s\n" "$f"
+                  done
+
+              } > manifest.txt || \
+                  fail_backup "Manifest creation failed" 1
+
+
+              : > checksum.sha256 || \
+                  fail_backup "Checksum file creation failed" 4
+
+              for f in $target_files; do
+
+                  sha256sum "files$f" >> checksum.sha256 || \
+                      fail_backup \
+          "Checksum calculation failed: $f" \
+                          4
+
+              done
+
+
+              {
+                  printf "[REQUIRED]\n"
+
+                  for f in $MIN_REQUIRED_PACKAGES; do
+                      printf "%s\n" "$f"
+                  done
+
+              } > packages.txt || \
+                  fail_backup "Package metadata creation failed" 1
+
+
+              create_firmware_info "firmware.info"
+
+
+              tar -czf "$BACKUP.tmp" \
+                  files \
+                  manifest.txt \
+                  checksum.sha256 \
+                  packages.txt \
+                  firmware.info || \
+                  fail_backup "Tar compression failed" 1
+
+
+              gzip -t "$BACKUP.tmp" || \
+                  fail_backup \
+          "Gzip integrity test failed" \
+                      4
+
+              tar -tzf "$BACKUP.tmp" >/dev/null || \
+                  fail_backup \
+          "Tar header integrity test failed" \
+                      4
+
+
+              mkdir -p "$VERIFY_TEST" || \
+                  fail_backup \
+          "Verification workspace creation failed" \
+                      4
+
+              tar -xzf "$BACKUP.tmp" -C "$VERIFY_TEST" || \
+                  fail_backup \
+          "Secondary extraction failed" \
+                      4
+
+              (
+                  cd "$VERIFY_TEST" || exit 1
+
+                  sha256sum -c checksum.sha256 \
+                      >/dev/null 2>&1
+              ) || {
+
+                  safe_rm "$VERIFY_TEST"
+
+                  fail_backup \
+          "Secondary extraction checksum verification failed" \
+                      4
+              }
+
+              safe_rm "$VERIFY_TEST"
+
+              verify_archive_members "$BACKUP.tmp" || \
+                  fail_backup \
+          "Archive member security verification failed" \
+                      5
+
+              mv "$BACKUP.tmp" "$BACKUP" || \
+                  fail_backup \
+          "Atomic replacement of backup failed" \
+                      1
+
+              safe_rm "$WORK"
+
+              trap - INT TERM HUP
+
+              printf \
+          "\nBackup completed successfully. (%d files)\n" \
+                  "$count"
+          }
+
+
+          # ============================================================
+          # RESTORE
+          # ============================================================
+
+          restore()
+          {
+              local count=0
+              local f
+              local tmp
+
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive member security verification failed" \
+                      5
+
+              safe_rm "$WORK"
+
+              mkdir -p "$WORK" || \
+                  fail_restore_preflight \
+          "Workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" -C "$WORK" || \
+                  fail_restore_preflight \
+          "Archive extraction failed" \
+                      5
+
+              cd "$WORK" || \
+                  fail_restore_preflight \
+          "Workspace cd failed" \
+                      5
+
+              [ -f "manifest.txt" ] || \
+                  fail_restore_preflight \
+          "Manifest missing" \
+                      5
+
+              [ -f "checksum.sha256" ] || \
+                  fail_restore_preflight \
+          "Checksum manifest missing" \
+                      5
+
+              read_manifest
+
+              verify_manifest
+
+              verify_archive_exact "$BACKUP" || \
+                  fail_restore_preflight \
+          "Archive exact verification failed" \
+                      5
+
+              sha256sum -c checksum.sha256 \
+                  >/dev/null 2>&1 || \
+                  fail_restore_preflight \
+          "Archive checksum verification failed" \
+                      5
+
+              verify_firmware_info
+
+              verify_packages
+
+              restore_safety
+
+              trap trap_restore INT TERM HUP
+
+              while IFS= read -r f; do
+
+                  mkdir -p "$(dirname "$f")" || {
+
+                      if restore_safety_back; then
+
+                          fail \
+          "Directory creation failed for $f. Rollback successful." \
+                              6
+
+                      else
+
+                          printf \
+          "CRITICAL: Rollback failed!\n" >&2
+
+                          printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                      fi
+                  }
+
+                  tmp="${f}.ib-tmp"
+
+                  rm -f "$tmp"
+
+                  if ! cp -p "files$f" "$tmp" ||
+                       ! mv -f "$tmp" "$f"; then
+
+                      rm -f "$tmp"
+
+                      if restore_safety_back; then
+
+                          fail \
+          "Atomic replacement failed for $f. Rollback successful." \
+                              6
+
+                      else
+
+                          printf \
+          "CRITICAL: Atomic replacement and rollback failed!\n" \
+                              >&2
+
+                          printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                      fi
+                  fi
+
+                  count=$((count + 1))
+
+              done < "$WORK/manifest.parsed"
+
+              if ! verify_restored; then
+
+                  if restore_safety_back; then
+
+                      fail \
+          "Post-restore verification failed. Rollback successful." \
+                          6
+
+                  else
+
+                      printf \
+          "CRITICAL: Post-restore verification AND rollback failed!\n" \
+                          >&2
+
+                      printf \
+          "CRITICAL: Safety snapshot preserved at %s\n" \
+                              "$SAFETY" >&2
+
+                          exit 6
+                  fi
+              fi
+
+              safe_rm "$SAFETY"
+              safe_rm "$WORK"
+
+              trap - INT TERM HUP
+
+              printf \
+          "Restore completed successfully. (%d files)\n" \
+                  "$count"
+
+              exit 0
+          }
+
+
+          # ============================================================
+          # VERIFY
+          # ============================================================
+
+          verify_cmd()
+          {
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail \
+          "Archive member security verification failed" \
+                      5
+
+              tar -tzf "$BACKUP" >/dev/null || \
+                  fail \
+          "Archive tar headers corrupted" \
+                      4
+
+              safe_rm "$WORK"
+
+              mkdir -p "$WORK" || \
+                  fail_verify \
+          "Verification workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" -C "$WORK" || \
+                  fail_verify \
+          "Archive extraction failed" \
+                      5
+
+              cd "$WORK" || \
+                  fail_verify \
+          "Workspace cd failed" \
+                      5
+
+              [ -f "manifest.txt" ] || \
+                  fail_verify \
+          "Manifest missing" \
+                      5
+
+              [ -f "checksum.sha256" ] || \
+                  fail_verify \
+          "Checksum manifest missing" \
+                      5
+
+              read_manifest
+
+              verify_manifest
+
+              verify_archive_exact "$BACKUP" || \
+                  fail_verify \
+          "Archive exact verification failed" \
+                      5
+
+              sha256sum -c checksum.sha256 \
+                  >/dev/null 2>&1 || \
+                  fail_verify \
+          "Checksum verification failed" \
+                      5
+
+              verify_firmware_info
+
+              verify_packages
+
+              safe_rm "$WORK"
+
+              printf \
+          "VERIFY SUCCESS: Archive is intact, complete, and compatible.\n"
+
+              exit 0
+          }
+
+
+          # ============================================================
+          # INFO
+          # ============================================================
+
+          info_cmd()
+          {
+              [ -f "$BACKUP" ] || \
+                  fail \
+          "Backup not found at $BACKUP" \
+                      5
+
+              gzip -t "$BACKUP" || \
+                  fail \
+          "Archive gzip corrupted" \
+                      5
+
+              verify_archive_members "$BACKUP" || \
+                  fail \
+          "Archive member security verification failed" \
+                      5
+
+              safe_rm "$WORK"
+
+              mkdir -p "$WORK" || \
+                  fail_verify \
+          "Info workspace creation failed" \
+                      5
+
+              tar -xzf "$BACKUP" \
+                  -C "$WORK" \
+                  firmware.info \
+                  2>/dev/null
+
+              if [ -f "$WORK/firmware.info" ]; then
+
+                  cat "$WORK/firmware.info"
+
+              else
+
+                  printf \
+          "Firmware Info: Legacy archive format (no firmware.info)\n"
+
+              fi
+
+              safe_rm "$WORK"
+
+              exit 0
+          }
+
+
+          # ============================================================
+          # CLI Dispatcher
+          # ============================================================
+
+          case "$1" in
+
+              b|backup)
+
+                  check_root
+                  backup
+                  ;;
+
+              r|restore)
+
+                  check_root
+                  restore
+                  ;;
+
+              v|verify)
+
+                  check_root
+                  verify_cmd
+                  ;;
+
+              i|info)
+
+                  info_cmd
+                  ;;
+
+              ver|version)
+
+                  printf "ib v%s\n" "$VERSION"
+                  exit 0
+                  ;;
+
+              *)
+
+                  usage
+                  ;;
+
+          esac
+          IB_SCRIPT
+          chmod 755 openwrt/package/base-files/files/usr/bin/ib
+          
+      - name: Generate Cache Variables
+        id: var
+        run: |
+          echo "dl_key=dl-${{ env.CACHE_NS }}-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
+          echo "ccache_key=ccache-${{ env.CACHE_NS }}-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
+
+      - name: Restore Cache (dl)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/dl
+          key: ${{ steps.var.outputs.dl_key }}
+          restore-keys: |
+            dl-${{ env.CACHE_NS }}-
+            
+      - name: Restore Cache (ccache)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.var.outputs.ccache_key }}
+          restore-keys: |
+            ccache-${{ env.CACHE_NS }}-
+            
+      - name: Stable Drift Control (SDC v1.4 Final)
+        run: |
+          set -euo pipefail
+          cd openwrt
+          echo "▶️ [Step] Running SDC v1.4 AFTER DL cache restore..."
+          source /tmp/sdc.sh
+          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
+          fi
+          set -e
+          echo "🔒 [SDC v1.4] Adaptive mode completed after cache restore"
+          {
+            echo "=== 🧬 BASELINE PATCHSET ==="
+            echo "Ubuntu Runner: ubuntu-26.04"
+            echo "ImmortalWrt Branch: ${IMMORTALWRT_VERSION}"
+            cat ../rust-package.info 2>/dev/null || true
+            echo "Block-mount patch: x86 automount removed + include/target.mk DEFAULT_PACKAGES.tweak direct injection removed"
+            XRAY_MAKEFILE="package/openwrt-passwall-packages/xray-core/Makefile"
+            if [ -f "$XRAY_MAKEFILE" ]; then
+              echo "Xray Package Definition: $(grep -E '^[[:space:]]*PKG_VERSION[[:space:]]*[:?]?=' "$XRAY_MAKEFILE" | head -n 1 || echo unknown)"
+            else
+              echo "Xray Package Definition: missing"
+            fi
+          } > ../baseline.patchset.info
+
+      - name: Generate Core Config
+        run: |
+          set -euo pipefail
+          cd openwrt
+          {
+            echo "CONFIG_TARGET_x86=y"
+            echo "CONFIG_TARGET_x86_64=y"
+            echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
+            echo "CONFIG_TARGET_IMAGES_GZIP=y"
+            echo "CONFIG_USE_APK=y"
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_PACKAGE_luci-app-passwall=y"
+            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
+            if [ "${INCLUDE_XRAY}" = "true" ]; then
+              echo "CONFIG_PACKAGE_xray-core=y"
+            else
+              echo "CONFIG_PACKAGE_xray-core=n"
+              echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=n"
+            fi
+            echo "CONFIG_PACKAGE_sing-box=y"
+            echo "CONFIG_PACKAGE_geoview=y"
+            echo "CONFIG_PACKAGE_ca-bundle=y"
+            echo "CONFIG_PACKAGE_ca-certificates=y"
+            echo "CONFIG_PACKAGE_smartdns=y"
+            echo "CONFIG_PACKAGE_luci-app-smartdns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-ddns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"
+            echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"
+            echo "CONFIG_PACKAGE_luci-app-upnp=y"
+            echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-theme-argon=y"
+            echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+            echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            echo "CONFIG_PACKAGE_qemu-ga=y"
+            echo "CONFIG_PACKAGE_input-support=y"
+            echo "CONFIG_PACKAGE_irqbalance=y"
+              echo "CONFIG_PACKAGE_kmod-wireguard=y"
+            echo "CONFIG_PACKAGE_wireguard-tools=y"
+            echo "CONFIG_PACKAGE_luci-proto-wireguard=y"
+            echo "CONFIG_PACKAGE_qrencode=y"
+            echo "CONFIG_PACKAGE_kmod-crypto-kpp=y"
+            echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y"
+            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"
+            echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"
+            echo "CONFIG_PACKAGE_htop=y"
+            echo "CONFIG_PACKAGE_ethtool=y"
+            echo "CONFIG_PACKAGE_nano=y"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_wget-ssl=y"
+            echo "CONFIG_PACKAGE_unzip=y"
+            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
+            echo "CONFIG_VIRTIO_NET=y"
+            echo "CONFIG_VIRTIO_BLK=y"
+            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
+            echo "CONFIG_PACKAGE_block-mount=n"
+            echo "CONFIG_PACKAGE_automount=n"
+            echo "CONFIG_PACKAGE_luci-app-fstab=n"
+            echo "CONFIG_PACKAGE_luci-app-plugins=n"
+            echo "CONFIG_CCACHE=y"
+          } > .config
+          
+          echo "=== 🇨🇳 Chinese LuCI Defconfig Audit ==="
+          for cfg in CONFIG_PACKAGE_luci CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
+            grep -Eq "^${cfg}=y$" .config || { echo "❌ REQUIRED CHINESE LUCI CONFIG MISSING: $cfg"; exit 1; }
+          done
+          echo "✅ Chinese LuCI defconfig audit passed"
+
+          echo "=== 🔒 Forbidden Package Defconfig Audit ==="
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
+            if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
+              echo "❌ FORBIDDEN PACKAGE ENABLED IN CONFIG: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Defconfig forbidden package audit passed"
+
+          echo "=== 🔒 Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
+            if ! grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config; then
+              echo "❌ REQUIRED XRAY PACKAGE MISSING FROM CONFIG: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Xray positive capability audit passed"
+          
+          echo "=== 🔒 Common Required Package Config Audit ==="
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          for p in $COMMON_REQUIRED_PACKAGES; do
+            grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING FROM CONFIG: $p"; exit 1; }
+          done
+          echo "✅ Common required package config audit passed"
+          echo "=== 🔒 Common Required VirtIO Kernel Feature Audit ==="
+          for cfg in CONFIG_VIRTIO_NET CONFIG_VIRTIO_BLK; do
+            grep -Eq "^${cfg}=y$" .config || { echo "❌ REQUIRED COMMON KERNEL FEATURE MISSING FROM CONFIG: $cfg"; exit 1; }
+          done
+          echo "✅ Common required VirtIO kernel feature audit passed"
+          
+          echo "=== 🔬 WireGuard Package Selection Audit ==="
+          grep -iE "CONFIG_PACKAGE_(kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
+          echo "=== \U0001f50e QEMU-GA Source/Kconfig Audit (Pre-Defconfig) ==="
+          find package/feeds/packages package/feeds -path '*/qemu/Makefile' -print 2>/dev/null || true
+          grep -R -n -A14 -B4 'define Package/qemu-ga' package/feeds/packages package/feeds 2>/dev/null | head -80 || true
+          echo "--- generated PACKAGE_qemu-ga symbol ---"
+          grep -n -A14 -B5 'PACKAGE_qemu-ga' tmp/.config-package.in 2>/dev/null || true
+          echo "--- qemu-ga dependency symbols ---"
+          for p in glib2 virtio-console-helper libstdcpp libudev; do
+            echo "===== $p ====="
+            grep -n -A8 -B3 "PACKAGE_${p}" tmp/.config-package.in 2>/dev/null | head -30 || true
+          done
+          echo "--- pre-defconfig qemu-ga ---"
+          grep -E '^(CONFIG_PACKAGE_qemu-ga|# CONFIG_PACKAGE_qemu-ga)' .config || true
+          make defconfig
+          echo "=== \U0001f50e QEMU-GA Post-Defconfig Diagnostic ==="
+          grep -E '^(CONFIG_PACKAGE_qemu-ga|# CONFIG_PACKAGE_qemu-ga)' .config || true
+          echo "--- PACKAGE_input-support symbol ---"
+          grep -n -A10 -B4 "PACKAGE_input-support" tmp/.config-package.in 2>/dev/null || true
+          echo "--- qemu-ga/input-support post-defconfig config ---"
+          grep -E "^(CONFIG_PACKAGE_(qemu-ga|input-support)|# CONFIG_PACKAGE_(qemu-ga|input-support))" .config || true
+          echo "--- generated PACKAGE_qemu-ga symbol after defconfig ---"
+          grep -n -A14 -B5 'PACKAGE_qemu-ga' tmp/.config-package.in 2>/dev/null || true
+
+          echo "=== 🔒 Post-Defconfig Forbidden Package Audit ==="
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
+            if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
+              echo "❌ FORBIDDEN PACKAGE ENABLED AFTER DEFCONFIG: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Post-defconfig forbidden package audit passed"
+
+          echo "=== 🇨🇳 Chinese LuCI Audit ==="
+          for cfg in CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
+            grep -Eq "^${cfg}=y$" .config || { echo "❌ REQUIRED CHINESE CONFIG MISSING: $cfg"; exit 1; }
+          done
+          echo "✅ Chinese LuCI config audit passed"
+
+          echo "=== 🔒 Post-Defconfig Common Required Package Audit ==="
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          for p in $COMMON_REQUIRED_PACKAGES; do
+            grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING AFTER DEFCONFIG: $p"; exit 1; }
+          done
+          echo "✅ Post-defconfig common required package audit passed"
+          
+          echo "=== 🔒 Post-Defconfig Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
+            if ! grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config; then
+              echo "❌ REQUIRED XRAY PACKAGE MISSING AFTER DEFCONFIG: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Post-defconfig Xray capability audit passed"
+
+          ./scripts/diffconfig.sh > ../logs_diffconfig.txt
+          gzip -9f -c .config > ../logs_full.config.gz
+          
+      - name: Build Firmware
+        run: |
+          set -euo pipefail
+          source /tmp/sre_utils.sh
+          cd openwrt
+          
+          IMM_DATE=$(git log -1 --format=%ct)
+          PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
+          PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
+          export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
+          cat ../rust-package.info >> ../toolchain.info 2>/dev/null || true
+          
+          MONITOR_PID=""
+          cleanup_monitor() {
+            echo "🧹 關閉駕駛艙雷達..."
+            [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
+          }
+          trap cleanup_monitor EXIT INT TERM
+          
+          (
+            echo "📡 BUILD MONITOR START"
+            while true; do
+              LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+              MEM=$(free -m | awk '/Mem:/ {printf "%d/%dMB | %.0f%%", $3, $2, ($3/$2)*100}')
+              DISK=$(df -h / | awk 'NR==2 {print $5}')
+              echo "[MONITOR]  $LOAD | $MEM | DISK: $DISK"
+              sleep 120 || true
+            done
+          ) &
+          MONITOR_PID=$!
+          
+          echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
+          retry bash -c 'timeout 30m make download -j$(nproc) V=s'
+          
+          # === 加入 ccache 編譯環境變數 ===
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          
+          FAST_BUILD_STATUS="SUCCESS"
+          echo "▶️ [Step] Starting main compilation..."
+          if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
+            FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
+            echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+            rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
+            make -j1 V=s 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
+          fi
+          echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
+
+          {
+            ccache -s
+            echo -e "\n=== CCACHE DISK USAGE ==="
+            df -h "$CCACHE_DIR"
+          } > ../logs_ccache.info 2>&1 || echo "ccache unavailable" > ../logs_ccache.info
+          
+      - name: Save Cache (dl)
+        uses: actions/cache/save@v4
+        if: success() && !cancelled()
+        continue-on-error: true
+        with:
+          path: |
+            openwrt/dl
+          key: ${{ steps.var.outputs.dl_key }}
+          
+      - name: Save Cache (ccache)
+        uses: actions/cache/save@v4
+        if: success() && !cancelled()
+        continue-on-error: true
+        with:
+          path: ~/.ccache
+          key: ${{ steps.var.outputs.ccache_key }}
+
+      - name: Validate & Final Packaging
+        run: |
+          set -euo pipefail
+          ROOT="$(pwd)"
+          TARGET_DIR="openwrt/bin/targets/x86/64"
+          mkdir -p release_assets
+          
+          [ -d "$TARGET_DIR" ] || exit 1
+          cd "$TARGET_DIR"
+          sha256sum --ignore-missing -c sha256sums || exit 1
+          find . -name "*combined*.img.gz" -exec install -m644 {} "$ROOT/release_assets/" \;
+          install -m644 sha256sums "$ROOT/release_assets/sha256sums"
+          
+          cd "$ROOT"
+          [ -z "$(find release_assets -type f -name "*combined*.img.gz")" ] && { echo "Firmware missing!"; exit 1; }
+          
+          find openwrt/bin/targets/x86/64 -name "*.manifest" -exec sh -c 'echo "=== $(basename "$1") ==="; cat "$1"; echo' _ {} \; > release_assets/installed-packages.txt
+          [ -s release_assets/installed-packages.txt ] || rm -f release_assets/installed-packages.txt
+          
+          echo "=== 🔒 Final Manifest Package Audit ==="
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
+            if grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
+              echo "❌ FORBIDDEN PACKAGE FOUND IN FINAL MANIFEST: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Final manifest package audit passed"
+
+          echo "=== 🇨🇳 Final Chinese LuCI Manifest Audit ==="
+          grep -Eq "(^|[[:space:]])luci-i18n-base-zh-cn([[:space:]]|$)" release_assets/installed-packages.txt || {
+            echo "❌ CHINESE LUCI BASE PACKAGE MISSING FROM FINAL MANIFEST"
+            exit 1
+          }
+          echo "✅ Final Chinese LuCI manifest audit passed"
+          
+          echo "=== 🔒 Common Required Package Final Manifest Audit ==="
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          for p in $COMMON_REQUIRED_PACKAGES; do
+            if ! grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
+              echo "❌ REQUIRED COMMON PACKAGE MISSING FROM FINAL MANIFEST: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Common required package final manifest audit passed"
+          echo "=== 🔧 Final QEMU Guest Agent Payload Audit ==="
+          QEMU_APK=$(find openwrt/bin/packages -type f -name 'qemu-ga*.apk' -print -quit 2>/dev/null || true)
+          [ -n "$QEMU_APK" ] || { echo "❌ qemu-ga APK missing from final package output"; exit 1; }
+          APK_TOOL="openwrt/staging_dir/host/bin/apk"
+          [ -x "$APK_TOOL" ] || { echo "❌ OpenWrt host apk tool missing"; exit 1; }
+          QEMU_AUDIT_DIR=$(mktemp -d)
+          trap 'rm -rf "$QEMU_AUDIT_DIR"' EXIT
+          if ! "$APK_TOOL" extract --allow-untrusted --destination "$QEMU_AUDIT_DIR" "$QEMU_APK" >/dev/null 2>&1; then
+            echo "❌ failed to extract qemu-ga APK for payload audit"
+            exit 1
+          fi
+          [ -x "$QEMU_AUDIT_DIR/usr/bin/qemu-ga" ] || {
+            echo "❌ /usr/bin/qemu-ga missing from final qemu-ga APK payload"
+            echo "--- extracted qemu-ga payload ---"
+            find "$QEMU_AUDIT_DIR" -maxdepth 4 -type f -o -type l | sort | head -100 || true
+            exit 1
+          }
+          echo "✅ Final qemu-ga payload audit passed: /usr/bin/qemu-ga"
+          echo "=== 🔒 Final Manifest Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
+            if ! grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
+              echo "❌ REQUIRED XRAY PACKAGE MISSING FROM FINAL MANIFEST: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Final manifest Xray capability audit passed"
+          
+          find openwrt/bin/packages -name "*.apk" | sort > release_assets/apk-list.txt
+          [ -s release_assets/apk-list.txt ] || rm -f release_assets/apk-list.txt
+          
+          OW_RELEASE="$(find openwrt/build_dir/target-x86_64_musl -path "*/etc/openwrt_release" -type f -print -quit 2>/dev/null || true)"
+          if [ -n "$OW_RELEASE" ] && [ -f "$OW_RELEASE" ]; then
+            OW_REV=$(grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown")
+          else
+            OW_REV="unknown"
+          fi
+          [ -z "$OW_REV" ] && OW_REV="unknown"
+          
+          cat << EOF > release_assets/build-info.txt
+          Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          Branch: ${BRANCH_LABEL}
+          OpenWrt Version: $OW_REV
+          Workflow Run ID: ${{ github.run_id }}
+          Runner OS: ${{ runner.os }}
+          Runner Image OS: ${ImageOS:-unknown}
+          Runner Image Version: ${ImageVersion:-unknown}
+          Runner Arch: $(uname -m)
+          Kernel: $(uname -r)
+          CPU: $(nproc) cores
+          Memory: $(free -h | awk '/Mem:/ {print $2}')
+          SOURCE_DATE_EPOCH: $(grep SOURCE_DATE_EPOCH toolchain.info | cut -d= -f2 || echo unknown)
+          ImmortalWrt Commit: $(git -C openwrt rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Commit: $(git -C openwrt/package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)
+          PassWall Packages Commit: $(git -C openwrt/package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)
+          Rust Package Commit: $(sed -n 's/^ImmortalWrt packages Rust Commit: //p' rust-package.info 2>/dev/null || echo unknown)
+          Fast Build Status: $(cat build-status.txt 2>/dev/null || echo "UNKNOWN")
+          EOF
+          
+          [ -s feeds.snapshot.txt ] && install -m644 feeds.snapshot.txt release_assets/feeds.snapshot
+          [ -s toolchain.info ] && install -m644 toolchain.info release_assets/toolchain.info
+          [ -s rust-package.info ] && install -m644 rust-package.info release_assets/rust-package.info
+          [ -s baseline.patchset.info ] && install -m644 baseline.patchset.info release_assets/baseline.patchset.info
+          [ -s logs_full.config.gz ] && install -m644 logs_full.config.gz release_assets/full.config.gz
+          [ -s logs_diffconfig.txt ] && install -m644 logs_diffconfig.txt release_assets/diffconfig.txt
+          [ -s logs_ccache.info ] && install -m644 logs_ccache.info release_assets/ccache.info
+          [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
+          [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
+          [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
+          [ -s /tmp/retry_history.log ] && install -m644 /tmp/retry_history.log release_assets/
+          [ -s /tmp/retry_debug.log ] && gzip -9 -c /tmp/retry_debug.log > release_assets/retry_debug.log.gz || true
+          
+          find release_assets -type f -empty -print -delete
+          
+      - name: Publish Release
+        uses: softprops/action-gh-release@v3
+        with:
+          make_latest: true
+          tag_name: ${{ env.RELEASE_TAG_PREFIX }}-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
+          name: ${{ env.RELEASE_TITLE }}
+          body: |
+            ### ${{ env.RELEASE_HEADING }}
+            - **版本基線**：基於 ImmortalWrt `${{ env.IMMORTALWRT_VERSION }}` 構建；版本指針集中化，後續升級僅需修改 `IMMORTALWRT_VERSION`。
+            - **Build Runner**：Ubuntu 26.04；改用 `python3-setuptools` 取代舊版 Python 套件。
+            - **Rust Toolchain**：直接取得 ImmortalWrt `packages` master 的 `lang/rust` package 定義。
+            - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
+            - **三重防線審計**：Defconfig、Post-Defconfig、最終 Manifest 階段強制檢查，杜絕 `block-mount`、`automount`、`luci-app-fstab`、`luci-app-plugins`${{ env.INCLUDE_XRAY != 'true' && '、`xray-core`' || '' }} 任何形式的依賴回歸。
+            - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages`。
+            - **備份引擎**：內建 `ib v1.8`，解耦套件強依賴，跨版本配置恢復安全。
+            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、官方 `wireguard-tools`、`luci-proto-wireguard` 及 `qrencode` (QR Code 支援)。
+            - **自癒架構 (SDC v1.4)**：OpenWrt Native `dumpinfo` 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
+            - **極致溯源與環境決定性**：`openwrt_release` 提取範圍限縮至 `target-x86_64_musl`；4G Swap 建立流程免疫 Runner Drift。
+            - **快取綱要嚴格隔離**：`dl-${{ env.CACHE_NS }}-` / `ccache-${{ env.CACHE_NS }}-` 前綴搭配 `feeds.snapshot.txt` 雜湊鎖定。
+            - **編譯加速**：DL cache 與 ccache 先恢復，再執行 SDC v1.4；避免 SDC 下載結果被舊 DL cache 覆蓋。
+            - **x86 block-mount 根因修復**：移除 x86 `automount` 並精準移除 `include/target.mk` 的 `DEFAULT_PACKAGES.tweak` 直接 `block-mount` 注入。
+            ${{ env.INCLUDE_XRAY != 'true' && '- **Xray 動態執行期解耦**：已從源碼級物理拔除 `xray-core` 編譯依賴（繞過 LTS 凍結 Go 工具鏈與最新 Xray 源碼的編譯衝突）。**刷入後請前往 PassWall →「App 更新」頁面線上下載 Xray 核心二進位檔。**' || '- **Full TLS 能力保留**：`xray-core`、`sing-box` 與 `luci-app-passwall` 均以 Defconfig + Final Manifest 正向驗證。' }}
+          files: release_assets/*
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
