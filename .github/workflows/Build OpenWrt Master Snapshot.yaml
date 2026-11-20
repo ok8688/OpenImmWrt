@@ -1,4 +1,15 @@
-name: Build ImmWrt Master Snapshot
+# ==== VARIANT CONFIG START ====
+name: Build OpenWrt Master Snapshot
+env:
+  IMMORTALWRT_VERSION: master
+  INCLUDE_XRAY: "true"
+  INCLUDE_ARGON_CONFIG: "false"
+  CACHE_NS: openwrt-master
+  RELEASE_TAG_PREFIX: openwrt-master
+  RELEASE_TITLE: "OpenWrt Master Snapshot Experimental"
+  RELEASE_HEADING: "🧪 OpenWrt Master Snapshot Experimental Build (SDC v1.4 Final)"
+  BRANCH_LABEL: openwrt-master
+# ==== VARIANT CONFIG END ====
 
 on:
   workflow_dispatch:
@@ -11,24 +22,23 @@ concurrency:
 
 permissions:
   contents: write
-
-env:
-  DEBIAN_FRONTEND: noninteractive
-  CCACHE_DIR: /home/runner/.ccache
-  CCACHE_COMPRESS: 1
-  CCACHE_MAXSIZE: 8G
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_SLOPPINESS: time_macros,file_macro
-  IMMORTALWRT_VERSION: master
+  actions: write # upload-artifact（失敗時上傳 pkg debug log）所需
 
 jobs:
   build:
     runs-on: ubuntu-26.04
     timeout-minutes: 360
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_COMPRESS: 1
+      CCACHE_MAXSIZE: 8G
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_SLOPPINESS: time_macros,file_macro
 
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Generate Metadata
         id: meta
@@ -45,7 +55,6 @@ jobs:
             local cmd_name="$(printf '%q ' "$@")"
             
             while true; do
-              # 靜默執行，所有輸出導向 debug log
               if "$@" >> /tmp/retry_debug.log 2>&1; then
                 echo "✅ Success!"
                 break
@@ -76,7 +85,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/.ghcup /usr/share/miniconda /usr/local/share/boost /usr/local/share/chromium || true
           
           echo "▶️ [Step] Installing dependencies..."
-          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
+          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
           
           echo "▶️ [Step] Deploying 4G Swap Armor (Deterministic)..."
           sudo swapoff -a || true
@@ -99,128 +108,189 @@ jobs:
           echo "Go: $(go version 2>/dev/null || echo 'unknown')" >> toolchain.info
           
 
-      - name: Clone & Official PassWall Main Source
+      - name: Clone & Official PassWall Main Source (Latest Commit)
         run: |
           set -euo pipefail
           source /tmp/sre_utils.sh
           
-          echo "▶️ [Step] Cloning ImmortalWrt ${IMMORTALWRT_VERSION} Source..."
-          retry bash -c 'rm -rf openwrt && timeout 20m git clone --depth=1 -b "${IMMORTALWRT_VERSION}" https://github.com/immortalwrt/immortalwrt.git openwrt'
+          echo "▶️ [Step] Cloning OpenWrt ${IMMORTALWRT_VERSION} Source..."
+          retry bash -c 'rm -rf openwrt && timeout 20m git clone -b "${IMMORTALWRT_VERSION}" --single-branch --depth 1 https://github.com/openwrt/openwrt.git openwrt'
           cd openwrt
           
           echo "▶️ [Step] Updating base feeds..."
           retry timeout 35m ./scripts/feeds update -a
           
-          echo "▶️ [Step] Cloning Passwall ecosystem..."
-          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box
+          # ✅ 終極物理防護 - 徹底切斷舊版供應鏈，並嚴格拔除不要的插件
+          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box smartdns luci-app-smartdns luci-theme-argon luci-app-argon-config || true
+          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/packages/net/smartdns feeds/luci/applications/luci-app-smartdns feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/packages/smartdns package/feeds/luci/luci-app-smartdns package/feeds/luci/luci-theme-argon package/feeds/luci/luci-app-argon-config
+          
+          echo "▶️ [Step] Cloning Passwall ecosystem (Latest Upstream)..."
           retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages'
           retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall'
-          
+
+          echo "▶️ [Step] Cloning luci-app-smartdns from pymumu upstream (replaces feeds copy)..."
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns'
+
+          echo "▶️ [Step] Cloning luci-theme-argon from jerrykuku upstream (replaces feeds copy)..."
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon'
+            
+
+
+
           # =====================================================
-          # 🔧 Master Rust Transplant (直接拉取 SNAPSHOT 已驗證 Rust host 架構)
+          # firewall4 fullcone patch override 已撤走（2026-11-16）
+          # 上游今朝 09:55（2fe3065a "firewall4: refresh fullcone patches"）
+          # 自己刷新咗 patch：hunk #1 嘅 disable_ipv6 context 已刪、
+          # hunk #8 嘅 helper 已改為 false，現行 patch 對 master fw4
+          # 3722eadc 原樣打得上，唔使再 sed。25.12 線用分支自帶舊
+          # patch＋舊 fw4，一向原樣打得上。若上游日後 fw4 再漂移令
+          # patch 打唔上，喺呢度按日期設閘加 fixup（見 2026-10-27、
+          # 2026-11-15 兩次先例），唔好喺 patch 本體改。
           # =====================================================
-          echo "▶️ [Step] Transplanting Rust package from ImmortalWrt master..."
-          rm -rf feeds/packages/lang/rust
-          retry bash -c 'timeout 20m git clone --depth=1 --single-branch --branch master https://github.com/immortalwrt/packages.git /tmp/packages-master'
-          RUST_PACKAGE_COMMIT="$(git -C /tmp/packages-master rev-parse HEAD)"
-          cp -a /tmp/packages-master/lang/rust feeds/packages/lang/rust
-          rm -rf /tmp/packages-master
-          echo "ImmortalWrt packages Rust Commit: $RUST_PACKAGE_COMMIT" > ../rust-package.info
-          echo "✅ Master Rust successfully transplanted!"
-          # =====================================================
-          
-          # =====================================================
-          # 🔒 x86 automount / block-mount root-cause fix (master-safe)
-          # =====================================================
-          if grep -q 'automount' target/linux/x86/Makefile; then
-            sed -i -E 's/[[:space:]]+automount([[:space:]]*)/\1/g' target/linux/x86/Makefile
-          fi
-          python3 - <<'PY_PATCH'
-          from pathlib import Path
-          path = Path("include/target.mk")
-          text = path.read_text()
-          start = text.find("DEFAULT_PACKAGES.tweak:=")
-          if start < 0:
-              raise SystemExit("FATAL: DEFAULT_PACKAGES.tweak not found")
-          end = text.find("\n\n", start)
-          if end < 0:
-              raise SystemExit("FATAL: DEFAULT_PACKAGES.tweak boundary not found")
-          block = text[start:end]
-          lines = block.splitlines(keepends=True)
-          kept = [line for line in lines if line.rstrip("\n") != "\tblock-mount \\"]
-          if len(kept) == len(lines):
-              print("ℹ️ block-mount entry already absent")
-          path.write_text(text[:start] + "".join(kept) + text[end:])
-          PY_PATCH
-          python3 - <<'PY_VERIFY'
-          from pathlib import Path
-          text = Path("include/target.mk").read_text()
-          start = text.find("DEFAULT_PACKAGES.tweak:=")
-          end = text.find("\n\n", start)
-          block = text[start:end] if start >= 0 and end >= 0 else ""
-          if "\tblock-mount \\" in block:
-              raise SystemExit("FATAL: block-mount still present in DEFAULT_PACKAGES.tweak")
-          PY_VERIFY
-          echo "✅ Snapshot source-level automount/block-mount root fix applied"
-          
+
           echo "▶️ [Step] Installing feeds..."
+          # =====================================================
+          # firewall4 fullcone patch (official line only)
+          # Official firewall4 ships no patches/ dir; fetch the patch
+          # from ImmortalWrt upstream master and stage it so the build
+          # applies it. First build verifies it applies to official
+          # master fw4; if not, refresh the hunk.
+          # =====================================================
+          echo "[Step] Fetching firewall4 fullcone patch from ImmortalWrt upstream..."
+          mkdir -p package/network/config/firewall4/patches
+          retry bash -c 'curl -fsSL -o package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch https://raw.githubusercontent.com/immortalwrt/immortalwrt/master/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch'
+          [ -s package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch ] || { echo "ERROR: fullcone patch download failed or empty"; exit 1; }
+          grep -q '^From ' package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch || { echo "ERROR: fullcone patch does not look like a patch"; exit 1; }
+          sha256sum package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch | awk '{print "Fullcone Patch SHA256: " $1}' > ../fullcone-patch.info
+          echo "fullcone patch staged: $(wc -l < package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch) lines"
+          # =====================================================
+
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
-          
+
           # =====================================================
-          # 🔒 Stable Drift Control v1.4 (staged; executed after DL cache restore)
+          # 🔒 Stable Drift Control v1.4 (Anti-Stale & Adaptive)
+          # Definition is staged now and executed AFTER DL cache restore.
           # =====================================================
-          cat > /tmp/sdc_snapshot.sh <<'SDC_SCRIPT'
+          cat > /tmp/sdc.sh <<'SDC_SCRIPT'
+          # =====================================================
+          # 🔒 Stable Drift Control v1.4 (Anti-Stale & Adaptive)
+          # =====================================================
           set +e
+          
           sync_hash () {
-            local name="$1" makefile="$2" pattern="$3"
-            [ -f "$makefile" ] || { echo "⚠️ $name: Makefile missing, skip"; return; }
+            local name="$1"
+            local makefile="$2"
+            
+            if [ ! -f "$makefile" ]; then
+              echo "⚠️ $name: Makefile missing, skip"
+              return
+            fi
+            
             echo "🔒 [SDC v1.4] Adaptive source resolution: $name"
+            
+            # 1. POSIX ERE 萬用賦值 Regex 兼容修正 (:=, ?=, =) 並防止雙重定義
             if grep -Eq '^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
               sed -i -E 's/^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=).*/PKG_HASH:=skip/' "$makefile"
             else
               printf '\nPKG_HASH:=skip\n' >> "$makefile"
             fi
+
+            # PKG_MIRROR_HASH 保持原樣或僅清除，不自動盲目賦值
             if grep -Eq '^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=)' "$makefile"; then
               sed -i -E 's/^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=).*/PKG_MIRROR_HASH:=skip/' "$makefile"
             fi
-            local pkg_source="$(make -s "package/${name}/dumpinfo" 2>/dev/null | sed -n 's/^Source: //p' | head -n 1)"
+            
+            # 2. v7 (2026-10-09): 從 Makefile 直接解析預期檔名。
+            #    不再依賴 make dumpinfo——SDC 在 defconfig 之前執行，
+            #    dumpinfo 可能失效導致 pkg_source 為空，進而觸發 pattern 誤殺。
+            local pkg_source="" pkg_name="" pkg_version=""
+            pkg_name="$(grep -E '^[[:space:]]*PKG_NAME[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            pkg_version="$(grep -E '^[[:space:]]*PKG_VERSION[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            pkg_source="$(grep -E '^[[:space:]]*PKG_SOURCE[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            # 展開 $(PKG_NAME) / $(PKG_VERSION)
+            if [ -n "$pkg_name" ]; then
+              pkg_source="$(printf '%s' "$pkg_source" | sed "s|\$(PKG_NAME)|$pkg_name|g")"
+            fi
+            if [ -n "$pkg_version" ]; then
+              pkg_source="$(printf '%s' "$pkg_source" | sed "s|\$(PKG_VERSION)|$pkg_version|g")"
+            fi
+            # 清理 CR 與空白；若仍有未展開變數則視為未知
             pkg_source="$(printf '%s' "$pkg_source" | sed 's/\r$//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')"
+            case "$pkg_source" in
+              *'$('*) pkg_source="" ;;
+            esac
+            
             if [ -n "$pkg_source" ]; then
               pkg_source="$(basename -- "$pkg_source")"
-              echo "🧹 [SDC v1.4] Purging stale dl cache: $pkg_source"
+              echo "🧹 [SDC v1.4] Purging stale dl cache for exact source: $pkg_source"
               rm -f "dl/$pkg_source"
+            else
+              echo "⚠️ $name: 無法從 Makefile 解析 PKG_SOURCE，跳過精準清理"
             fi
+            
+            # 3. 觸發實際下載 (強制從上游抓取乾淨 Artifact，並保留錯誤可觀測性)
             if make "package/${name}/download" V=s >"/tmp/sdc-${name}-download.log" 2>&1; then
               echo "✅ $name: download stage completed"
             else
-              echo "⚠️ $name: download stage failed"
+              echo "⚠️ $name: download stage failed; continuing with Adaptive Drift"
               tail -n 80 "/tmp/sdc-${name}-download.log" || true
             fi
+            
             local FILE=""
-            [ -n "$pkg_source" ] && [ -f "dl/$pkg_source" ] && FILE="dl/$pkg_source"
-            if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
-              FILE="$(find dl -maxdepth 1 -type f \
-                \( -name "${pattern}*.tar.gz" -o -name "${pattern}*.tar.xz" -o -name "${pattern}*.zip" \) \
-                -print 2>/dev/null | sort | head -n 1)"
+            
+            # 4. 精準定位 OpenWrt 實際下載 Artifact
+            if [ -n "$pkg_source" ]; then
+              if [ -f "dl/$pkg_source" ]; then
+                FILE="dl/$pkg_source"
+              fi
             fi
+            
+            # 5. v7 (2026-10-09): pattern 兜底已徹底移除。
+            #    它曾在版本漂移時撿到舊版 tarball 並把錯誤 hash 寫入 Makefile。
+            #    預期檔案缺失時保留 PKG_HASH:=skip，讓 build 階段重新下載不驗證。
+            if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+              echo "⚠️ $name: expected artifact missing, keeping 'skip' (拒絕用舊版 tarball 冒充)"
+            fi
+            
+            # 6. SHA256 Self-Healing
             if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-              local NEW_HASH="$(sha256sum "$FILE" | awk '{print $1}')"
+              local NEW_HASH=""
+              NEW_HASH="$(sha256sum "$FILE" | awk '{print $1}')" || true
               if [ -n "$NEW_HASH" ]; then
                 sed -i -E "s/^[[:space:]]*PKG_HASH[[:space:]]*(:=|\?=|=).*/PKG_HASH:=$NEW_HASH/" "$makefile"
-                echo "✅ $name: Upstream aligned ($NEW_HASH)"
+                echo "✅ $name: Upstream aligned"
+                echo "   Source : $FILE"
+                echo "   SHA256 : $NEW_HASH"
+              else
+                echo "⚠️ $name: SHA256 calculation failed, keeping 'skip'"
               fi
             else
-              echo "⚠️ $name: Artifact missing, keeping 'skip'"
+              echo "⚠️ $name: Artifact missing, keeping 'skip' to force build"
             fi
           }
           SDC_SCRIPT
-          chmod +x /tmp/sdc_snapshot.sh
-          
-          # 🚀 雙重保險定點抹除手術 (掛載點 & 插件)
-          ./scripts/feeds uninstall luci-app-fstab luci-app-plugins || true
-          rm -rf feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
-          rm -rf package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
-          
+          chmod +x /tmp/sdc.sh
+
+          # =====================================================
+          # 🚀 Surgical Strike: 源碼級物理抹除 xray-core 依賴 (交由 GUI 內建下載)
+          # 僅在 INCLUDE_XRAY != "true" 時執行
+          # =====================================================
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            echo "▶️ [Step] Eradicating xray-core from PassWall dependencies..."
+            sed -i 's/+PACKAGE_luci-app-passwall_INCLUDE_Xray:xray-core//g' package/openwrt-passwall/luci-app-passwall/Makefile || true
+            sed -i '/config PACKAGE_luci-app-passwall_INCLUDE_Xray/,/config / s/default y/default n/g' package/openwrt-passwall/luci-app-passwall/Makefile || true
+            rm -rf package/openwrt-passwall-packages/xray-core
+            if grep -q '+PACKAGE_luci-app-passwall_INCLUDE_Xray:xray-core' package/openwrt-passwall/luci-app-passwall/Makefile; then
+              echo "❌ xray-core dependency still present after eradication"
+              exit 1
+            fi
+            echo "✅ xray-core physically eradicated from build tree."
+          else
+            echo "ℹ️ INCLUDE_XRAY=true, keeping xray-core in build tree."
+          fi
+          # =====================================================
+
           # 全域精準破壞前端選單殘留節點 
           find feeds package -path "*/usr/share/luci/menu.d/*.json" -type f | while read -r f; do
             jq 'del(."admin/system/mounts", ."admin/services/mounts", ."admin/system/plugins") // .' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || echo "⚠️ Skipping invalid JSON: $f"
@@ -229,10 +299,12 @@ jobs:
           # 結構化 SBOM 生成
           {
             echo "=== 🧬 COMPONENT COMMIT ==="
-            echo "ImmortalWrt Commit: $(git rev-parse HEAD)"
+            echo "OpenWrt Commit: $(git rev-parse HEAD)"
             echo "PassWall Commit: $(git -C package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)"
             echo "PassWall Packages Commit: $(git -C package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)"
-            echo "=== 🧬 FEEDS LIST ==="
+            cat ../rust-package.info 2>/dev/null || true
+          echo "Baseline Patchset: ubuntu26-openwrt-master-v1"
+          echo "=== 🧬 FEEDS LIST ==="
             ./scripts/feeds list -f | sort
             echo "=== 🧬 REPOS STATUS ==="
             find package -maxdepth 2 -name .git -print0 | while IFS= read -r -d '' gitdir; do
@@ -241,14 +313,14 @@ jobs:
             done | sort
           } > ../feeds.snapshot.txt
 
-      - name: Inject ImmWrt Backup Tool (ib v1.8)
+      - name: Inject ImmWrt Backup Tool (ib v1.9)
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
           cat << 'IB_SCRIPT' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
 
-          VERSION="1.8"
+          VERSION="1.9"
           readonly VERSION
 
           BACKUP_DIR="${IBB_BACKUP_DIR:-/root}"
@@ -281,13 +353,13 @@ jobs:
           /etc/config/passwall_server
           /etc/config/smartdns
           /etc/config/system
-          /etc/config/upnpd
           /etc/crontabs/root
           "
           readonly REQUIRED_FILES
 
           OPTIONAL_FILES="
           /etc/config/argon
+          /etc/smartdns/custom.conf
           /etc/passwall/rules/direct_host
           /etc/passwall/rules/direct_ip
           /etc/passwall/rules/proxy_host
@@ -345,9 +417,9 @@ jobs:
                   /etc/config/passwall_server|\
                   /etc/config/smartdns|\
                   /etc/config/system|\
-                  /etc/config/upnpd|\
                   /etc/crontabs/root|\
                   /etc/config/argon|\
+                  /etc/smartdns/custom.conf|\
                   /etc/passwall/rules/direct_host|\
                   /etc/passwall/rules/direct_ip|\
                   /etc/passwall/rules/proxy_host|\
@@ -1452,103 +1524,198 @@ jobs:
           esac
           IB_SCRIPT
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
+
+      - name: Set Argon as Default Theme
+        run: |
+          set -euo pipefail
+          echo "▶️ [Step] Setting Argon as the default LuCI theme on first boot..."
+          mkdir -p openwrt/package/base-files/files/etc/uci-defaults
+          cat > openwrt/package/base-files/files/etc/uci-defaults/99-argon-default-theme <<'EOF'
+          #!/bin/sh
+          # Template-injected: boot into Argon by default.
+          uci set luci.main.mediaurlbase='/luci-static/argon'
+          uci commit luci
+          exit 0
+          EOF
+          chmod 755 openwrt/package/base-files/files/etc/uci-defaults/99-argon-default-theme
+
+      - name: Set OpenWrt Defaults (Timezone/NTP/Packet Steering/Mirror)
+        run: |
+          set -euo pipefail
+          echo "[Step] Injecting OpenWrt default settings (replaces default-settings-chn)..."
+          mkdir -p openwrt/package/base-files/files/etc/uci-defaults
+          cat > openwrt/package/base-files/files/etc/uci-defaults/98-openwrt-defaults <<'EOF'
+          #!/bin/sh
+          # Template-injected: OpenWrt master defaults (replaces ImmortalWrt
+          # default-settings-chn). Values verified against
+          # immortalwrt/immortalwrt master package/emortal/default-settings
+          # (99-default-settings, 99-default-settings-chinese); zonename
+          # adapted to kk's current Asia/Hong_Kong (HKT-8, same UTC+8, no DST).
+          . /etc/openwrt_release
+
+          uci -q get system.@imm_init[0] > "/dev/null" || uci -q add system imm_init > "/dev/null"
+
+          if ! uci -q get system.@imm_init[0].system_chn > "/dev/null"; then
+            uci set system.@system[0].timezone="HKT-8"
+            uci set system.@system[0].zonename="Asia/Hong_Kong"
+            uci delete system.ntp.server
+            uci add_list system.ntp.server="ntp.tencent.com"
+            uci add_list system.ntp.server="ntp1.aliyun.com"
+            uci add_list system.ntp.server="ntp.ntsc.ac.cn"
+            uci add_list system.ntp.server="cn.ntp.org.cn"
+            uci set system.@imm_init[0].system_chn="1"
+            uci commit system
+          fi
+
+          case "$DISTRIB_TARGET" in
+          "x86"/*)
+            if ! uci -q get system.@imm_init[0].packet_steering > "/dev/null"; then
+              uci set network.globals="globals"
+              uci set network.@globals[0].packet_steering="1"
+              uci commit network
+              uci set system.@imm_init[0].packet_steering="1"
+              uci commit system
+            fi
+            ;;
+          esac
+
+          sed -i "/log-facility/d" "/etc/dnsmasq.conf"
+          echo "log-facility=/dev/null" >> "/etc/dnsmasq.conf"
+
+          # apk mirror: upstream vsean URL (https://mirrors.vsean.net/openwrt) is an
+          # ImmortalWrt-only mirror (302 -> downloads.immortalwrt.org), so the sed
+          # below is a no-op on official OpenWrt and the official
+          # downloads.openwrt.org URLs are kept. Choose a verified official-OpenWrt
+          # China mirror before first flash if needed.
+          apk_mirror="$(uci -q get system.@imm_init[0].apk_mirror)"
+          if [ -z "$apk_mirror" ]; then
+            apk_mirror="https://mirrors.vsean.net/openwrt"
+            uci set system.@imm_init[0].apk_mirror="$apk_mirror"
+            uci commit system
+          fi
+          sed -i.bak "s,https://downloads.immortalwrt.org,$apk_mirror,g" "/etc/apk/repositories.d/distfeeds.list"
+
+          exit 0
+          EOF
+          chmod 755 openwrt/package/base-files/files/etc/uci-defaults/98-openwrt-defaults
+
           
       - name: Generate Cache Variables
         id: var
         run: |
-          echo "dl_key=dl-snapshot-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
-          echo "ccache_key=ccache-snapshot-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
+          echo "dl_key=dl-${{ env.CACHE_NS }}-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
+          echo "ccache_key=ccache-${{ env.CACHE_NS }}-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
 
-      - name: Restore DL Cache
-        uses: actions/cache/restore@v4
+      - name: Restore Cache (dl)
+        uses: actions/cache/restore@v6
         with:
-          path: openwrt/dl
+          path: |
+            openwrt/dl
           key: ${{ steps.var.outputs.dl_key }}
-          # 🚀 三級快取降級兜底防線：自動向下繼承 LTS 的共通 dl tarball，極速縮短重置時間
           restore-keys: |
-            dl-snapshot-
+            dl-${{ env.CACHE_NS }}-
             
-      - name: Restore CCache
-        uses: actions/cache/restore@v4
+      - name: Restore Cache (ccache)
+        uses: actions/cache/restore@v6
         with:
           path: ~/.ccache
           key: ${{ steps.var.outputs.ccache_key }}
-          # 🛡️ 嚴格邊界：隔離不同世界線的編譯緩存，不允許泛用 fallback 造成跨版本污染
           restore-keys: |
-            ccache-snapshot-
+            ccache-${{ env.CACHE_NS }}-
             
-      - name: Stable Drift Control (SDC v1.4)
+      - name: Stable Drift Control (SDC v1.4 Final)
         run: |
           set -euo pipefail
           cd openwrt
           echo "▶️ [Step] Running SDC v1.4 AFTER DL cache restore..."
-          source /tmp/sdc_snapshot.sh
-          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
-          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
+          source /tmp/sdc.sh
+          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile"
+          fi
           set -e
-          echo "🔒 [SDC v1.4] Snapshot adaptive mode completed"
-          
+          echo "🔒 [SDC v1.4] Adaptive mode completed after cache restore"
+          {
+            echo "=== 🧬 BASELINE PATCHSET ==="
+            echo "Ubuntu Runner: ubuntu-26.04"
+            echo "OpenWrt Branch: master"
+            cat ../rust-package.info 2>/dev/null || true
+            echo "Block-mount: official .router default has no block-mount; no tweak patch needed"
+            XRAY_MAKEFILE="package/openwrt-passwall-packages/xray-core/Makefile"
+            if [ -f "$XRAY_MAKEFILE" ]; then
+              echo "Xray Package Definition: $(grep -E '^[[:space:]]*PKG_VERSION[[:space:]]*[:?]?=' "$XRAY_MAKEFILE" | head -n 1 || echo unknown)"
+            else
+              echo "Xray Package Definition: missing"
+            fi
+          } > ../baseline.patchset.info
+
       - name: Generate Core Config
         run: |
           set -euo pipefail
           cd openwrt
-          cat << 'EOF' > .config
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=1536
-          CONFIG_TARGET_IMAGES_GZIP=y
-          CONFIG_USE_APK=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_LUCI_LANG_zh_Hans=y
-          CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
-          CONFIG_PACKAGE_xray-core=y
-          CONFIG_PACKAGE_sing-box=y
-          CONFIG_PACKAGE_geoview=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_ca-certificates=y
-          CONFIG_PACKAGE_smartdns=y
-          CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y
-          CONFIG_PACKAGE_luci-app-smartdns=y
-          CONFIG_PACKAGE_luci-app-ddns=y
-          CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
-          CONFIG_PACKAGE_ddns-scripts-cloudflare=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-theme-argon=y
-          CONFIG_PACKAGE_luci-app-argon-config=y
-          CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_qemu-ga=y
-          CONFIG_PACKAGE_input-support=y
-          CONFIG_PACKAGE_irqbalance=y
-          CONFIG_PACKAGE_kmod-wireguard=y
-          CONFIG_PACKAGE_wireguard-tools=y
-          CONFIG_PACKAGE_luci-proto-wireguard=y
-          CONFIG_PACKAGE_qrencode=y
-          CONFIG_PACKAGE_kmod-crypto-kpp=y
-          CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_luci-app-advanced-reboot=y
-          CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_ethtool=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_kmod-tcp-bbr=y
-          CONFIG_VIRTIO_NET=y
-          CONFIG_VIRTIO_BLK=y
-          CONFIG_PACKAGE_kmod-nft-offload=y
-          CONFIG_CCACHE=y
-          CONFIG_PACKAGE_block-mount=n
-          CONFIG_PACKAGE_automount=n
-          CONFIG_PACKAGE_luci-app-fstab=n
-          CONFIG_PACKAGE_luci-app-plugins=n
-          EOF
+          {
+            echo "CONFIG_TARGET_x86=y"
+            echo "CONFIG_TARGET_x86_64=y"
+            echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
+            echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1536"
+            echo "CONFIG_TARGET_IMAGES_GZIP=y"
+            echo "CONFIG_USE_APK=y"
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_PACKAGE_luci-app-passwall=y"
+            echo "CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y"
+            if [ "${INCLUDE_XRAY}" = "true" ]; then
+              echo "CONFIG_PACKAGE_xray-core=y"
+            else
+              echo "CONFIG_PACKAGE_xray-core=n"
+              echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=n"
+            fi
+            echo "CONFIG_PACKAGE_sing-box=y"
+            echo "CONFIG_PACKAGE_geoview=y"
+            echo "CONFIG_PACKAGE_ca-bundle=y"
+            echo "CONFIG_PACKAGE_ca-certificates=y"
+            echo "CONFIG_PACKAGE_smartdns=y"
+            echo "CONFIG_PACKAGE_luci-app-smartdns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-smartdns-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-ddns=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"
+            echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"
+            echo "CONFIG_PACKAGE_luci-theme-argon=y"
+            if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+              echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+            fi
+            echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
+            echo "CONFIG_PACKAGE_qemu-ga=y"
+            echo "CONFIG_PACKAGE_input-support=y"
+            echo "CONFIG_PACKAGE_irqbalance=y"
+              echo "CONFIG_PACKAGE_kmod-wireguard=y"
+            echo "CONFIG_PACKAGE_wireguard-tools=y"
+            echo "CONFIG_PACKAGE_luci-proto-wireguard=y"
+            echo "CONFIG_PACKAGE_qrencode=y"
+            echo "CONFIG_PACKAGE_kmod-crypto-kpp=y"
+            echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y"
+            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
+            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
+            echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"
+            echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"
+            echo "CONFIG_PACKAGE_htop=y"
+            echo "CONFIG_PACKAGE_ethtool=y"
+            echo "CONFIG_PACKAGE_nano=y"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_wget-ssl=y"
+            echo "CONFIG_PACKAGE_unzip=y"
+            echo "CONFIG_PACKAGE_kmod-tcp-bbr=y"
+            echo "CONFIG_VIRTIO_NET=y"
+            echo "CONFIG_VIRTIO_BLK=y"
+            echo "CONFIG_PACKAGE_kmod-nft-offload=y"
+            echo "CONFIG_PACKAGE_block-mount=n"
+            echo "CONFIG_PACKAGE_automount=n"
+            echo "CONFIG_PACKAGE_luci-app-fstab=n"
+            echo "CONFIG_PACKAGE_luci-app-plugins=n"
+            echo "CONFIG_CCACHE=y"
+          } > .config
+          
           echo "=== 🇨🇳 Chinese LuCI Defconfig Audit ==="
           for cfg in CONFIG_PACKAGE_luci CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
             grep -Eq "^${cfg}=y$" .config || { echo "❌ REQUIRED CHINESE LUCI CONFIG MISSING: $cfg"; exit 1; }
@@ -1556,14 +1723,36 @@ jobs:
           echo "✅ Chinese LuCI defconfig audit passed"
 
           echo "=== 🔒 Forbidden Package Defconfig Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins; do
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
             if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
               echo "❌ FORBIDDEN PACKAGE ENABLED IN CONFIG: $p"
               exit 1
             fi
           done
+          echo "✅ Defconfig forbidden package audit passed"
+
+          echo "=== 🔒 Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
+            if ! grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config; then
+              echo "❌ REQUIRED XRAY PACKAGE MISSING FROM CONFIG: $p"
+              exit 1
+            fi
+          done
+          echo "✅ Xray positive capability audit passed"
+          
           echo "=== 🔒 Common Required Package Config Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING FROM CONFIG: $p"; exit 1; }
           done
@@ -1575,8 +1764,8 @@ jobs:
           echo "✅ Common required VirtIO kernel feature audit passed"
           
           echo "=== 🔬 WireGuard Package Selection Audit ==="
-          grep -iE "CONFIG_PACKAGE_(bash|kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
-          echo "=== 🔎 QEMU-GA Source/Kconfig Audit (Pre-Defconfig) ==="
+          grep -iE "CONFIG_PACKAGE_(kmod-wireguard|wireguard-tools|luci-proto-wireguard|qrencode)" .config || true
+          echo "=== \U0001f50e QEMU-GA Source/Kconfig Audit (Pre-Defconfig) ==="
           find package/feeds/packages package/feeds -path '*/qemu/Makefile' -print 2>/dev/null || true
           grep -R -n -A14 -B4 'define Package/qemu-ga' package/feeds/packages package/feeds 2>/dev/null | head -80 || true
           echo "--- generated PACKAGE_qemu-ga symbol ---"
@@ -1589,7 +1778,7 @@ jobs:
           echo "--- pre-defconfig qemu-ga ---"
           grep -E '^(CONFIG_PACKAGE_qemu-ga|# CONFIG_PACKAGE_qemu-ga)' .config || true
           make defconfig
-          echo "=== 🔎 QEMU-GA Post-Defconfig Diagnostic ==="
+          echo "=== \U0001f50e QEMU-GA Post-Defconfig Diagnostic ==="
           grep -E '^(CONFIG_PACKAGE_qemu-ga|# CONFIG_PACKAGE_qemu-ga)' .config || true
           echo "--- PACKAGE_input-support symbol ---"
           grep -n -A10 -B4 "PACKAGE_input-support" tmp/.config-package.in 2>/dev/null || true
@@ -1599,33 +1788,46 @@ jobs:
           grep -n -A14 -B5 'PACKAGE_qemu-ga' tmp/.config-package.in 2>/dev/null || true
 
           echo "=== 🔒 Post-Defconfig Forbidden Package Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins; do
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
             if grep -Eq "^CONFIG_PACKAGE_${p}=[ym]" .config; then
               echo "❌ FORBIDDEN PACKAGE ENABLED AFTER DEFCONFIG: $p"
               exit 1
             fi
           done
-          echo "=== 🇨🇳 Snapshot Chinese LuCI Audit ==="
+          echo "✅ Post-defconfig forbidden package audit passed"
+
+          echo "=== 🇨🇳 Chinese LuCI Audit ==="
           for cfg in CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
             grep -Eq "^${cfg}=y$" .config || { echo "❌ REQUIRED CHINESE CONFIG MISSING: $cfg"; exit 1; }
           done
-          echo "✅ Snapshot Chinese LuCI config audit passed"
-          
+          echo "✅ Chinese LuCI config audit passed"
+
           echo "=== 🔒 Post-Defconfig Common Required Package Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING AFTER DEFCONFIG: $p"; exit 1; }
           done
           echo "✅ Post-defconfig common required package audit passed"
           
-          echo "=== 🔐 Snapshot Xray Capability Audit ==="
-          for p in xray-core sing-box luci-app-passwall; do
+          echo "=== 🔒 Post-Defconfig Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
             if ! grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config; then
-              echo "❌ REQUIRED SNAPSHOT PACKAGE MISSING AFTER DEFCONFIG: $p"
+              echo "❌ REQUIRED XRAY PACKAGE MISSING AFTER DEFCONFIG: $p"
               exit 1
             fi
           done
-          echo "✅ Snapshot defconfig audits passed"
+          echo "✅ Post-defconfig Xray capability audit passed"
 
           ./scripts/diffconfig.sh > ../logs_diffconfig.txt
           gzip -9f -c .config > ../logs_full.config.gz
@@ -1636,53 +1838,117 @@ jobs:
           source /tmp/sre_utils.sh
           cd openwrt
           
-          # 提取最新 component commit timestamp 作為基準
           IMM_DATE=$(git log -1 --format=%ct)
           PW_DATE=$(git -C package/openwrt-passwall log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
           PWP_DATE=$(git -C package/openwrt-passwall-packages log -1 --format=%ct 2>/dev/null || echo "$IMM_DATE")
           export SOURCE_DATE_EPOCH=$(printf "%s\n%s\n%s" "$IMM_DATE" "$PW_DATE" "$PWP_DATE" | sort -n | tail -1)
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> ../toolchain.info
+          cat ../rust-package.info >> ../toolchain.info 2>/dev/null || true
           
-          export CC="ccache gcc" CXX="ccache g++"
+          MONITOR_PID=""
+          cleanup_monitor() {
+            echo "🧹 關閉駕駛艙雷達..."
+            [ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null || true
+          }
+          trap cleanup_monitor EXIT INT TERM
           
-          # 📟 駕駛艙儀表板複合監控指標
-          ( while true; do 
+          (
+            echo "📡 BUILD MONITOR START"
+            while true; do
               LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
               MEM=$(free -m | awk '/Mem:/ {printf "%d/%dMB | %.0f%%", $3, $2, ($3/$2)*100}')
-              DISK=$(df -h . | awk 'NR==2 {print $5}')
+              DISK=$(df -h / | awk 'NR==2 {print $5}')
               echo "[MONITOR]  $LOAD | $MEM | DISK: $DISK"
-              sleep 120
-            done ) &
-          trap 'kill $! 2>/dev/null' EXIT
+              sleep 120 || true
+            done
+          ) &
+          MONITOR_PID=$!
           
           echo "▶️ [Step] Downloading package dependencies (this may take a while)..."
           retry bash -c 'timeout 30m make download -j$(nproc) V=s'
           
+          # === 加入 ccache 編譯環境變數 ===
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          
           FAST_BUILD_STATUS="SUCCESS"
           echo "▶️ [Step] Starting main compilation..."
-          if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
-            FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
-            echo "FAST_BUILD_FAILED=true" > ../build-status.txt
-            rm -rf tmp && make -j1 V=s BUILD_LOG=1 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
+          # v6 (2026-10-09): 明文 tee（消除 gzip 管線競態，失敗分類 grep 可靠），結束後再壓縮
+          if ! make -j$(nproc) 2>&1 | tee ../logs_build.log; then
+            # --- 失敗分類 1：tarball 下載類（hash 不符 / 鏡像 404）→ 直接結束，不刷屏 ---
+            if grep -qE "No more mirrors to try|Hash of the downloaded file does not match" ../logs_build.log; then
+              echo "❌ 下載階段失敗（非編譯錯誤），跳過 fallback，直接結束"
+              echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+              echo "FAST_BUILD_STATUS=FAILED (Download)" >> ../build-status.txt
+              gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+              exit 1
+            fi
+            # --- 失敗分類 2：編譯類 → 只對失敗的 package 做 verbose（有界輸出，不再全量 world） ---
+            FAILED_PKG=$(grep -m1 -oE "ERROR: package/[^ ]+ failed to build" ../logs_build.log | sed -E 's/^ERROR: //; s/ failed to build$//' || true)
+            if [ -n "$FAILED_PKG" ]; then
+              echo "🎯 失敗 package: $FAILED_PKG，單獨 verbose 重編定位（輸出有界）..."
+              if make "$FAILED_PKG/compile" -j1 V=s > ../logs_pkg_debug.log 2>&1; then
+                echo "✅ $FAILED_PKG 單編通過（疑似並行抖動），恢復 world 繼續..."
+                if make -j$(nproc) 2>&1 | tail -n 40; then
+                  FAST_BUILD_STATUS="SUCCESS (Recovered)"
+                  echo "✅ world 恢復成功"
+                else
+                  echo "❌ world 恢復失敗，最後 60 行："
+                  tail -n 60 ../logs_build.log
+                  gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+                  echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+                  exit 1
+                fi
+              else
+                echo "❌ $FAILED_PKG 單編仍失敗，關鍵錯誤："
+                echo "===================="
+                grep -a -B2 -A10 -iE "error:" ../logs_pkg_debug.log | tail -n 60 || true
+                echo "---- 原始 verbose 尾段（最後 80 行；grep 濾不到的錯誤在此，如 patch Hunk FAILED） ----"
+                tail -n 80 ../logs_pkg_debug.log
+                echo "===================="
+                gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+                gzip -1 -c ../logs_pkg_debug.log > ../logs_pkg_debug.log.gz; rm -f ../logs_pkg_debug.log
+                echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+                echo "FAST_BUILD_STATUS=FAILED (Compile: $FAILED_PKG)" >> ../build-status.txt
+                exit 1
+              fi
+            else
+              echo "⚠️ 無法定位失敗 package，顯示最後 80 行："
+              tail -n 80 ../logs_build.log
+              gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+              echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+              exit 1
+            fi
           fi
           echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
-          
+          gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+
           {
             ccache -s
             echo -e "\n=== CCACHE DISK USAGE ==="
             df -h "$CCACHE_DIR"
           } > ../logs_ccache.info 2>&1 || echo "ccache unavailable" > ../logs_ccache.info
           
-      - name: Save DL Cache
-        uses: actions/cache/save@v4
+      - name: Upload Per-Package Debug Log (on failure)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pkg-debug-log
+          path: logs_pkg_debug.log.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Save Cache (dl)
+        uses: actions/cache/save@v6
         if: success() && !cancelled()
         continue-on-error: true
         with:
-          path: openwrt/dl
+          path: |
+            openwrt/dl
           key: ${{ steps.var.outputs.dl_key }}
-
-      - name: Save CCache
-        uses: actions/cache/save@v4
+          
+      - name: Save Cache (ccache)
+        uses: actions/cache/save@v6
         if: success() && !cancelled()
         continue-on-error: true
         with:
@@ -1707,19 +1973,32 @@ jobs:
           
           find openwrt/bin/targets/x86/64 -name "*.manifest" -exec sh -c 'echo "=== $(basename "$1") ==="; cat "$1"; echo' _ {} \; > release_assets/installed-packages.txt
           [ -s release_assets/installed-packages.txt ] || rm -f release_assets/installed-packages.txt
+          
           echo "=== 🔒 Final Manifest Package Audit ==="
-          for p in block-mount automount luci-app-fstab luci-app-plugins; do
+          FORBIDDEN_PKGS="block-mount automount luci-app-fstab luci-app-plugins"
+          if [ "${INCLUDE_XRAY}" != "true" ]; then
+            FORBIDDEN_PKGS="$FORBIDDEN_PKGS xray-core"
+          fi
+          for p in $FORBIDDEN_PKGS; do
             if grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
               echo "❌ FORBIDDEN PACKAGE FOUND IN FINAL MANIFEST: $p"
               exit 1
             fi
           done
+          echo "✅ Final manifest package audit passed"
+
           echo "=== 🇨🇳 Final Chinese LuCI Manifest Audit ==="
-          grep -Eq "(^|[[:space:]])luci-i18n-base-zh-cn([[:space:]]|$)" release_assets/installed-packages.txt || { echo "❌ CHINESE LUCi BASE PACKAGE MISSING FROM FINAL MANIFEST"; exit 1; }
+          grep -Eq "(^|[[:space:]])luci-i18n-base-zh-cn([[:space:]]|$)" release_assets/installed-packages.txt || {
+            echo "❌ CHINESE LUCI BASE PACKAGE MISSING FROM FINAL MANIFEST"
+            exit 1
+          }
           echo "✅ Final Chinese LuCI manifest audit passed"
           
           echo "=== 🔒 Common Required Package Final Manifest Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             if ! grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
               echo "❌ REQUIRED COMMON PACKAGE MISSING FROM FINAL MANIFEST: $p"
@@ -1745,22 +2024,23 @@ jobs:
             exit 1
           }
           echo "✅ Final qemu-ga payload audit passed: /usr/bin/qemu-ga"
-          echo "=== 🔒 Full Snapshot Positive Capability Audit ==="
-          for p in xray-core sing-box luci-app-passwall; do
+          echo "=== 🔒 Final Manifest Xray Capability Audit ==="
+          TLS_PKGS="sing-box luci-app-passwall"
+          if [ "${INCLUDE_XRAY}" = "true" ]; then
+            TLS_PKGS="xray-core $TLS_PKGS"
+          fi
+          for p in $TLS_PKGS; do
             if ! grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
-              echo "❌ REQUIRED SNAPSHOT PACKAGE MISSING FROM FINAL MANIFEST: $p"
+              echo "❌ REQUIRED XRAY PACKAGE MISSING FROM FINAL MANIFEST: $p"
               exit 1
             fi
           done
-          echo "✅ Snapshot final manifest audits passed"
-          
-
+          echo "✅ Final manifest Xray capability audit passed"
           
           find openwrt/bin/packages -name "*.apk" | sort > release_assets/apk-list.txt
           [ -s release_assets/apk-list.txt ] || rm -f release_assets/apk-list.txt
           
-          # 🚀 防禦性 find：免疫目錄結構變更，提取最終產物之真實指紋
-          OW_RELEASE=$(find openwrt/build_dir -name openwrt_release -path "*/root-*/etc/openwrt_release" -print -quit 2>/dev/null || true)
+          OW_RELEASE="$(find openwrt/build_dir/target-x86_64_musl -path "*/etc/openwrt_release" -type f -print -quit 2>/dev/null || true)"
           if [ -n "$OW_RELEASE" ] && [ -f "$OW_RELEASE" ]; then
             OW_REV=$(grep DISTRIB_REVISION "$OW_RELEASE" | head -n 1 | cut -d= -f2 | tr -d "'" || echo "unknown")
           else
@@ -1770,7 +2050,7 @@ jobs:
           
           cat << EOF > release_assets/build-info.txt
           Build Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          Branch: ${IMMORTALWRT_VERSION}
+          Branch: ${BRANCH_LABEL}
           OpenWrt Version: $OW_REV
           Workflow Run ID: ${{ github.run_id }}
           Runner OS: ${{ runner.os }}
@@ -1781,22 +2061,24 @@ jobs:
           CPU: $(nproc) cores
           Memory: $(free -h | awk '/Mem:/ {print $2}')
           SOURCE_DATE_EPOCH: $(grep SOURCE_DATE_EPOCH toolchain.info | cut -d= -f2 || echo unknown)
-          ImmortalWrt Commit: $(git -C openwrt rev-parse HEAD 2>/dev/null || echo unknown)
+          OpenWrt Commit: $(git -C openwrt rev-parse HEAD 2>/dev/null || echo unknown)
           PassWall Commit: $(git -C openwrt/package/openwrt-passwall rev-parse HEAD 2>/dev/null || echo unknown)
           PassWall Packages Commit: $(git -C openwrt/package/openwrt-passwall-packages rev-parse HEAD 2>/dev/null || echo unknown)
-          Rust Package Commit: $(sed -n 's/^ImmortalWrt packages Rust Commit: //p' rust-package.info 2>/dev/null || echo unknown)
+          Rust Package Commit: official feeds lang/rust (no transplant)
           Fast Build Status: $(cat build-status.txt 2>/dev/null || echo "UNKNOWN")
           EOF
           
           [ -s feeds.snapshot.txt ] && install -m644 feeds.snapshot.txt release_assets/feeds.snapshot
           [ -s toolchain.info ] && install -m644 toolchain.info release_assets/toolchain.info
           [ -s rust-package.info ] && install -m644 rust-package.info release_assets/rust-package.info
+          [ -s fullcone-patch.info ] && install -m644 fullcone-patch.info release_assets/fullcone-patch.info
+          [ -s baseline.patchset.info ] && install -m644 baseline.patchset.info release_assets/baseline.patchset.info
           [ -s logs_full.config.gz ] && install -m644 logs_full.config.gz release_assets/full.config.gz
           [ -s logs_diffconfig.txt ] && install -m644 logs_diffconfig.txt release_assets/diffconfig.txt
           [ -s logs_ccache.info ] && install -m644 logs_ccache.info release_assets/ccache.info
           [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
           [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
-          [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
+          [ -s logs_pkg_debug.log.gz ] && install -m644 logs_pkg_debug.log.gz release_assets/
           [ -s /tmp/retry_history.log ] && install -m644 /tmp/retry_history.log release_assets/
           [ -s /tmp/retry_debug.log ] && gzip -9 -c /tmp/retry_debug.log > release_assets/retry_debug.log.gz || true
           
@@ -1806,36 +2088,26 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           make_latest: true
-          tag_name: SNAPSHOT-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
-          name: ImmWrt SNAPSHOT Experimental
+          tag_name: ${{ env.RELEASE_TAG_PREFIX }}-b${{ github.run_number }}-${{ steps.meta.outputs.date }}
+          name: ${{ env.RELEASE_TITLE }}
           body: |
-            ### 🧪 SNAPSHOT Experimental Build (SDC v1.4 Final)
-            - **原生備份引擎**：注入 ib v1.8 原生備份工具，確立「11 REQUIRED + 6 OPTIONAL = up to 17 files」備份規格（含 Argon dark.css），賦予滾動版本 OpenWrt native /bin/sh 相容之原子回滾防護，並修復 tar 目錄項驗證誤判。
-            - **JSON 韌性升級**：增強 jq 解析，防止上游不穩定之殘缺選單檔案干擾編譯 Pipeline。
-            - **WireGuard 依賴補齊：明確宣告 WireGuard 核心模組、官方 wireguard-tools、luci-proto-wireguard 及 qrencode。
-            - **自癒架構 (SDC v1.4 Final)**：導入 OpenWrt Native Build System (dumpinfo) 優先解析，100% 容忍空白字元漂移，並保留 Legacy pattern 猜測作為防禦性 Fallback 免疫上游目錄結構異常。
+            ### ${{ env.RELEASE_HEADING }}
+            - **版本基線**：基於 OpenWrt `master` 構建；版本指針集中化，後續升級僅需修改 `IMMORTALWRT_VERSION`（分支名）。
+            - **Build Runner**：Ubuntu 26.04；改用 `python3-setuptools` 取代舊版 Python 套件。
+            - **Rust Toolchain**：官方 `packages` feed 自帶 `lang/rust`，無需移植。
+            - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
+            - **三重防線審計**：Defconfig、Post-Defconfig、最終 Manifest 階段強制檢查，杜絕 `block-mount`、`automount`、`luci-app-fstab`、`luci-app-plugins`${{ env.INCLUDE_XRAY != 'true' && '、`xray-core`' || '' }} 任何形式的依賴回歸。
+            - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages`。
+            - **備份引擎**：內建 `ib v1.9`，解耦套件強依賴，跨版本配置恢復安全。
+            - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、官方 `wireguard-tools`、`luci-proto-wireguard` 及 `qrencode` (QR Code 支援)。
+            - **自癒架構 (SDC v1.4)**：OpenWrt Native `dumpinfo` 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
+            - **極致溯源與環境決定性**：`openwrt_release` 提取範圍限縮至 `target-x86_64_musl`；4G Swap 建立流程免疫 Runner Drift。
+            - **快取綱要嚴格隔離**：`dl-${{ env.CACHE_NS }}-` / `ccache-${{ env.CACHE_NS }}-` 前綴搭配 `feeds.snapshot.txt` 雜湊鎖定。
+            - **編譯加速**：DL cache 與 ccache 先恢復，再執行 SDC v1.4；避免 SDC 下載結果被舊 DL cache 覆蓋。
+            - **x86 block-mount**：官方 `.router` 預設唔包 `block-mount`，官方 x86 Makefile 本身無 `automount`，無需 patch。
+            - **firewall4 fullcone**：由 ImmortalWrt 上游拎 patch 擺入 `firewall4/patches/`，第一次構建驗證套用。
+            - **預設設定**：自寫 uci-defaults（時區 Asia/Hong_Kong、國內 NTP、packet_steering、dnsmasq log），頂替 `default-settings-chn`；autocore、luci-app-cpufreq 已剔除。
+            ${{ env.INCLUDE_XRAY != 'true' && '- **Xray 動態執行期解耦**：已從源碼級物理拔除 `xray-core` 編譯依賴（繞過 LTS 凍結 Go 工具鏈與最新 Xray 源碼的編譯衝突）。**刷入後請前往 PassWall →「App 更新」頁面線上下載 Xray 核心二進位檔。**' || '- **Full TLS 能力保留**：`xray-core`、`sing-box` 與 `luci-app-passwall` 均以 Defconfig + Final Manifest 正向驗證。' }}
           files: release_assets/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-
-
-# =====================================================================
-# 🔒 [LTS FINAL SEALED] - THE ABSOLUTE FINALITY v9.0.0 (25.12.2 TSAR BOMBA)
-# =====================================================================
-# 狀態：TSAR BOMBA SEALED (沙皇級物理空間強化封存)。
-# 哲學：鎖定正式版發行分支，透過 Adaptive Drift 容忍上游漂移。
-# 終極融合：
-# 1. 繼承 Snapshot 的企業級 retry 除錯、串流日誌與全套考古 Artifacts。
-# 2. 升級 SOURCE_DATE_EPOCH 溯源與 find 精準提取 openwrt_release。
-# 3. 保留 LTS 專屬的沙皇空間清理、絕對決定性的 4G Swap 與自癒 Hash 架構。
-# 4. [v9.0.0] 升級 ib v1.8 備份引擎，修復 tar 目錄項誤判，整合 qrencode。
-# 5. [SDC v1.4 Final] 導入 OpenWrt Native dumpinfo 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；導入可觀測性日誌。
-# 6. [顯式宣告] 明確加入 CONFIG_USE_APK=y，並透過 Defconfig 與 Manifest 雙重審計嚴格排除 fstab、plugins 與 block-mount。
-# 7. [Cache Schema Versioning] 導入 sdc14 Namespace，綁定 `feeds.snapshot.txt` 雜湊，阻斷跨快照污染。
-# 8. [CCACHE 加速] 導入 Ubuntu 26.04 專屬 ccache Namespace、CCACHE_BASEDIR 與 8G 上限，大幅降低 LTS 重新編譯時間。
-# 9. [Ubuntu 26.04] 升級 host；以已驗證的 ImmortalWrt packages master Rust package 定義取代 LTS 舊 Rust。
-# 10. [Block-Mount Root Cause Fix] 精準切斷 x86 automount 與 DEFAULT_PACKAGES.tweak 的 block-mount 直接注入，不改動 ext4/squashfs image 格式。
-# 11. [Full TLS] 保留 Xray + Sing-box 完整編譯能力；加入正向 Manifest 驗證。
-# =====================================================================
-
