@@ -1622,6 +1622,26 @@ jobs:
           chmod 755 openwrt/package/base-files/files/etc/uci-defaults/98-openwrt-defaults
 
           
+      - name: Drop ImmortalWrt Video Repo (404)
+        run: |
+          set -euo pipefail
+          echo "▶️ [Step] Dropping ImmortalWrt video repo (never published, 404)..."
+          mkdir -p openwrt/package/base-files/files/etc/uci-defaults
+          cat > openwrt/package/base-files/files/etc/uci-defaults/98-drop-video-repo <<'EOF'
+          #!/bin/sh
+          # Template-injected: ImmortalWrt never publishes a video feed
+          # (packages.adb 404 on every release since 23.05 and all
+          # snapshots; official OpenWrt does publish it). Drop the video
+          # repo so `apk update` exits 0 on first boot. No-op on official
+          # OpenWrt: the guard only matches ImmortalWrt/vsean URLs.
+          [ -f /etc/apk/repositories.d/distfeeds.list ] || exit 0
+          if grep -q -e 'immortalwrt.org' -e 'mirrors.vsean.net' /etc/apk/repositories.d/distfeeds.list; then
+            sed -i '/\/video$/d' /etc/apk/repositories.d/distfeeds.list
+          fi
+          exit 0
+          EOF
+          chmod 755 openwrt/package/base-files/files/etc/uci-defaults/98-drop-video-repo
+          
       - name: Generate Cache Variables
         id: var
         run: |
