@@ -374,21 +374,25 @@ jobs:
             done | sort
           } > ../feeds.snapshot.txt
 
-      - name: Inject ImmWrt Backup Tool (ib v1.9)
+      - name: Inject OpenWrt Backup Tool (ib v2.0)
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
           cat << 'IB_SCRIPT' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
 
-          VERSION="1.9"
+          VERSION="2.0"
           readonly VERSION
 
           BACKUP_DIR="${IBB_BACKUP_DIR:-/root}"
           readonly BACKUP_DIR
 
-          BACKUP="$BACKUP_DIR/immwrt-backup-latest.tar.gz"
-          readonly BACKUP
+          BACKUP="$BACKUP_DIR/openwrt-backup-latest.tar.gz"
+          # NB: not readonly — resolve_backup() may point it at the
+          # legacy 1.x filename for restore/verify/info.
+
+          BACKUP_OLD="$BACKUP_DIR/immwrt-backup-latest.tar.gz"
+          readonly BACKUP_OLD
 
           WORK="/tmp/ib-work"
           readonly WORK
@@ -463,6 +467,24 @@ jobs:
           }
 
 
+          # Resolve the archive to read: prefer the 2.0 filename,
+          # fall back to the legacy 1.x filename so backups made
+          # by ib <= 1.9 remain restorable. Backup (write) always
+          # uses the new name and never calls this.
+          resolve_backup()
+          {
+              [ -f "$BACKUP" ] && return 0
+
+              if [ -f "$BACKUP_OLD" ]; then
+                  printf "INFO: Legacy backup found, using %s\n" "$BACKUP_OLD"
+                  BACKUP="$BACKUP_OLD"
+                  return 0
+              fi
+
+              return 1
+          }
+
+
           #
           # Exact restore whitelist.
           #
@@ -497,7 +519,7 @@ jobs:
           usage()
           {
               printf \
-          "ImmWrt Backup Tool v%s
+          "OpenWrt Backup Tool v%s
           Usage:
             ib {b|backup}
             ib {r|restore}
@@ -1139,7 +1161,7 @@ jobs:
 
 
               {
-                  printf "# ImmWrt Backup Manifest\n"
+                  printf "# OpenWrt Backup Manifest\n"
                   printf "# Tool-Version: %s\n" "$VERSION"
                   printf "# Date: %s\n" \
                       "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -1255,9 +1277,9 @@ jobs:
               local f
               local tmp
 
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1417,9 +1439,9 @@ jobs:
 
           verify_cmd()
           {
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1498,9 +1520,9 @@ jobs:
 
           info_cmd()
           {
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1791,12 +1813,14 @@ jobs:
             echo "CONFIG_VIRTIO_BLK=y"
             echo "CONFIG_PACKAGE_kmod-nft-offload=y"
             echo "CONFIG_PACKAGE_kmod-nft-fullcone=y"
+            echo "CONFIG_GRUB_TIMEOUT=0"
             echo "CONFIG_PACKAGE_block-mount=n"
             echo "CONFIG_PACKAGE_automount=n"
             echo "CONFIG_PACKAGE_luci-app-fstab=n"
             echo "CONFIG_PACKAGE_luci-app-plugins=n"
             echo "CONFIG_CCACHE=y"
           } > .config
+          grep -Eq "^CONFIG_GRUB_TIMEOUT=0$" .config || { echo "❌ GRUB_TIMEOUT NOT SET IN CONFIG"; exit 1; }
           
           echo "=== 🇨🇳 Chinese LuCI Defconfig Audit ==="
           for cfg in CONFIG_PACKAGE_luci CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
@@ -2180,7 +2204,7 @@ jobs:
             - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
             - **三重防線審計**：Defconfig、Post-Defconfig、最終 Manifest 階段強制檢查，杜絕 `block-mount`、`automount`、`luci-app-fstab`、`luci-app-plugins`${{ env.INCLUDE_XRAY != 'true' && '、`xray-core`' || '' }} 任何形式的依賴回歸。
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages`。
-            - **備份引擎**：內建 `ib v1.9`，解耦套件強依賴，跨版本配置恢復安全。
+            - **備份引擎**：內建 `ib v2.0`，解耦套件強依賴，跨版本配置恢復安全。
             - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、官方 `wireguard-tools`、`luci-proto-wireguard` 及 `qrencode` (QR Code 支援)。
             - **自癒架構 (SDC v1.4)**：OpenWrt Native `dumpinfo` 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
             - **極致溯源與環境決定性**：`openwrt_release` 提取範圍限縮至 `target-x86_64_musl`；4G Swap 建立流程免疫 Runner Drift。
