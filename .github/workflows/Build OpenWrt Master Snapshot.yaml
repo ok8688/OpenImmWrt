@@ -227,6 +227,74 @@ jobs:
           echo "lang/rust patched: prebuilt LLVM download enabled"
           # =====================================================
 
+          # =====================================================
+          # LuCI overview: add CPU usage (%) (official line only)
+          # Official LuCI's status overview shows load average but
+          # no CPU usage row. ImmortalWrt's LuCI fork adds one via
+          # a getCPUUsage RPC (luci-base ucode) + a row in
+          # 10_system.js. Port ONLY the CPU usage bit:
+          #   * luci-base: insert getCPUUsage method (verbatim copy
+          #     of ImmortalWrt's; it just runs `top -n1` via awk,
+          #     no autocore dependency - Q1 stays intact)
+          #   * luci-mod-status: declare the RPC, resolve it, shift
+          #     data indices, render the row after Load Average
+          # Not ported: getCPUBench/getCPUInfo/getTempInfo (need
+          # autocore's /etc/bench.log, /sbin/cpuinfo, /sbin/tempinfo)
+          # and the Temperature row. Runs after feeds update,
+          # before feeds install. Python heredoc with assertions
+          # fail-louds if an anchor drifts; the greps double-check.
+          # NOTE: raw string - the ucode popen line carries
+          # backslash escapes (\') that must reach the file untouched.
+          # =====================================================
+          echo "[Step] Patching LuCI to add CPU usage % to overview (official line only)..."
+          python3 - <<'PYEOF'
+          def replace_once(s, old, new, label):
+              n = s.count(old)
+              assert n == 1, f"{label}: expected 1, found {n}"
+              print(f"  [ok] {label}")
+              return s.replace(old, new, 1)
+
+
+          # --- 1. luci-base: add getCPUUsage RPC (verbatim copy of ImmortalWrt's method) ---
+          p1 = 'feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci'
+          s = open(p1).read()
+          method = r'''	getCPUUsage: {
+          		call: function() {
+          			const fd = popen('top -n1 | awk \'/^CPU/ {printf("%d%", 100 - $8)}\'');
+          			if (fd) {
+          				let cpuusage = fd.read('all');
+          				if (!cpuusage)
+          					cpuusage = '?';
+          				fd.close();
+
+          				return { cpuusage: cpuusage };
+          			} else {
+          				return { cpuusage: error() };
+          			}
+          		}
+          	},
+
+          '''
+          assert 'getCPUUsage' not in s, 'getCPUUsage already present in luci ucode'
+          s = replace_once(s, "\tgetRealtimeStats: {", method + "\tgetRealtimeStats: {", 'luci-base: insert getCPUUsage')
+          open(p1, 'w').write(s)
+
+          # --- 2. luci-mod-status: overview CPU usage row ---
+          p2 = 'feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js'
+          t = open(p2).read()
+          declare = "var callCPUUsage = rpc.declare({\n\tobject: 'luci',\n\tmethod: 'getCPUUsage'\n});\n"
+          t = replace_once(t, "var callSystemInfo = rpc.declare({\n\tobject: 'system',\n\tmethod: 'info'\n});\n", "var callSystemInfo = rpc.declare({\n\tobject: 'system',\n\tmethod: 'info'\n});\n\n" + declare, '10_system.js: declare callCPUUsage')
+          t = replace_once(t, "\t\t\tL.resolveDefault(callSystemInfo(), {}),\n", "\t\t\tL.resolveDefault(callSystemInfo(), {}),\n\t\t\tL.resolveDefault(callCPUUsage(), {}),\n", '10_system.js: resolve callCPUUsage')
+          t = replace_once(t, "\t\t    luciversion = data[2],\n\t\t    unixtime    = data[3];", "\t\t    cpuusage    = data[2],\n\t\t    luciversion = data[3],\n\t\t    unixtime    = data[4];", '10_system.js: shift data indices')
+          t = replace_once(t, "\t\t\t) : null\n\t\t];", "\t\t\t) : null,\n\t\t\t_('CPU usage (%)'),    cpuusage.cpuusage\n\t\t];", '10_system.js: add CPU usage row')
+          open(p2, 'w').write(t)
+          print('LuCI CPU usage patch applied')
+          PYEOF
+          grep -q 'getCPUUsage' feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci || { echo "ERROR: getCPUUsage not added to luci ucode"; exit 1; }
+          grep -q "CPU usage (%)" feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || { echo "ERROR: CPU usage row not added to 10_system.js"; exit 1; }
+          echo "LuCI CPU usage patch applied"
+          # =====================================================
+
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
