@@ -1636,7 +1636,7 @@ jobs:
           # OpenWrt: the guard only matches ImmortalWrt/vsean URLs.
           [ -f /etc/apk/repositories.d/distfeeds.list ] || exit 0
           if grep -q -e 'immortalwrt.org' -e 'mirrors.vsean.net' /etc/apk/repositories.d/distfeeds.list; then
-            sed -i '/\/video$/d' /etc/apk/repositories.d/distfeeds.list
+            sed -i '/\/video\//d' /etc/apk/repositories.d/distfeeds.list
           fi
           exit 0
           EOF
