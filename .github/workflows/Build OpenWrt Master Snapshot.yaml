@@ -200,6 +200,33 @@ jobs:
           echo "fullcone stack staged: firewall4 patch $(wc -l < package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch) lines, nftables patch $(wc -l < package/network/utils/nftables/patches/002-nftables-add-fullcone-expression-support.patch) lines, libnftnl patch $(wc -l < package/libs/libnftnl/patches/001-libnftnl-add-fullcone-expression-support.patch) lines, fullconenat-nft package + 2 patches"
           # =====================================================
 
+          # =====================================================
+          # Rust: download prebuilt LLVM instead of building it
+          # (official line only). Official lang/rust sets
+          # llvm.download-ci-llvm=false, so every build compiles
+          # LLVM from source (~2h; build #1 Rust took 2h58m vs
+          # ImmortalWrt max 1h14m; build #2 stayed slow on a warm
+          # cache, so this is structural, not a cache effect).
+          # ImmortalWrt's lang/rust (same 1.96.1, same hash) sets
+          # download-ci-llvm=true + x.py --ci false (GitHub
+          # Actions sets CI=true; without the explicit false,
+          # x.py would stay in CI mode). Two seds mirror
+          # ImmortalWrt exactly; the greps fail-loud if either
+          # edit misses. This replaces the deleted Rust transplant
+          # step (step 3): same effect on the LLVM setting,
+          # without cloning the ImmortalWrt packages repo. Runs
+          # after feeds update, before feeds install.
+          # NOTE: raw string - the seds carry backslash escapes
+          # (\t, \\, \n) that must reach the shell untouched.
+          # =====================================================
+          echo "[Step] Patching lang/rust to download prebuilt LLVM (mirror ImmortalWrt)..."
+          sed -i 's|--set=llvm\.download-ci-llvm=false|--set=llvm.download-ci-llvm=true|' feeds/packages/lang/rust/Makefile
+          sed -i 's|^\t\$(PYTHON) \$(HOST_BUILD_DIR)/x\.py \\$|\t$(PYTHON) $(HOST_BUILD_DIR)/x.py \\\n\t\t--ci false \\|' feeds/packages/lang/rust/Makefile
+          grep -qF -- '--set=llvm.download-ci-llvm=true' feeds/packages/lang/rust/Makefile || { echo "ERROR: failed to set download-ci-llvm=true in lang/rust Makefile"; exit 1; }
+          grep -qF -- '--ci false' feeds/packages/lang/rust/Makefile || { echo "ERROR: failed to add --ci false to lang/rust Makefile"; exit 1; }
+          echo "lang/rust patched: prebuilt LLVM download enabled"
+          # =====================================================
+
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
