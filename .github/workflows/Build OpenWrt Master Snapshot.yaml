@@ -234,9 +234,9 @@ jobs:
           # no CPU usage row. ImmortalWrt's LuCI fork adds one via
           # a getCPUUsage RPC (luci-base ucode) + a row in
           # 10_system.js. Port ONLY the CPU usage bit:
-          #   * luci-base: insert getCPUUsage method (verbatim copy
-          #     of ImmortalWrt's; it just runs `top -n1` via awk,
-          #     no autocore dependency - Q1 stays intact)
+          #   * luci-base: insert getCPUUsage method (reads /proc/stat
+          #     twice, 0.3s apart; no `top`, no autocore - Q1 intact.
+          #     #8's `top` version showed "?" in browsers, replaced #9)
           #   * luci-mod-status: declare the RPC, resolve it, shift
           #     data indices, render the row after Load Average
           # Not ported: getCPUBench/getCPUInfo/getTempInfo (need
@@ -247,8 +247,8 @@ jobs:
           # #7 proved it, getCPUUsage was 0 in the image. feeds install
           # does not carry the working-tree patch into package/feeds/.)
           # fail-louds if an anchor drifts; the greps double-check.
-          # NOTE: raw string - the ucode popen line carries
-          # backslash escapes (\') that must reach the file untouched.
+          # NOTE: raw string - the ucode split line carries a
+          # backslash escape ('\n') that must reach the file untouched.
           # =====================================================
           echo "[Step] Patching LuCI to add CPU usage % to overview (official line only)..."
           python3 - <<'PYEOF'
@@ -259,22 +259,42 @@ jobs:
               return s.replace(old, new, 1)
 
 
-          # --- 1. luci-base: add getCPUUsage RPC (verbatim copy of ImmortalWrt's method) ---
+          # --- 1. luci-base: add getCPUUsage RPC (/proc/stat, not ImmortalWrt's `top`) ---
           p1 = 'package/feeds/luci/luci-base/root/usr/share/rpcd/ucode/luci'
           s = open(p1).read()
           method = r'''	getCPUUsage: {
           		call: function() {
-          			const fd = popen('top -n1 | awk \'/^CPU/ {printf("%d%", 100 - $8)}\'');
-          			if (fd) {
-          				let cpuusage = fd.read('all');
-          				if (!cpuusage)
-          					cpuusage = '?';
-          				fd.close();
-
-          				return { cpuusage: cpuusage };
-          			} else {
-          				return { cpuusage: error() };
-          			}
+          			let read_cpu = function() {
+          				let content = readfile('/proc/stat');
+          				if (!content)
+          					return null;
+          				for (let line in split(content, '\n')) {
+          					if (!match(line, /^cpu /))
+          						continue;
+          					let parts = filter(split(line, ' '), s => s != '');
+          					if (length(parts) < 9)
+          						return null;
+          					let idle = (+parts[4]) + (+parts[5]);
+          					let total = 0;
+          					for (let i = 1; i < length(parts); i++)
+          						total += (+parts[i]);
+          					return { idle: idle, total: total };
+          				}
+          				return null;
+          			};
+          			let a = read_cpu();
+          			if (!a)
+          				return { cpuusage: '?' };
+          			system('sleep 0.3');
+          			let b = read_cpu();
+          			if (!b)
+          				return { cpuusage: '?' };
+          			let idle_diff = b.idle - a.idle;
+          			let total_diff = b.total - a.total;
+          			if (total_diff <= 0)
+          				return { cpuusage: '?' };
+          			let usage = 100 * (1 - idle_diff / total_diff);
+          			return { cpuusage: sprintf('%d%%', usage) };
           		}
           	},
 
