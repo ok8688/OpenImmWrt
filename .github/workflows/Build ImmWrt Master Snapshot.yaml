@@ -1,8 +1,9 @@
 # ==== VARIANT CONFIG START ====
-name: Build ImmWrt Master Snapshot M
+name: Build ImmWrt Master Snapshot
 env:
   IMMORTALWRT_VERSION: master
   INCLUDE_XRAY: "true"
+  INCLUDE_ARGON_CONFIG: "false"
   CACHE_NS: snapshot
   RELEASE_TAG_PREFIX: SNAPSHOT
   RELEASE_TITLE: "ImmWrt SNAPSHOT Experimental"
@@ -21,6 +22,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write # upload-artifact（失敗時上傳 pkg debug log）所需
 
 jobs:
   build:
@@ -36,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout Source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Generate Metadata
         id: meta
@@ -83,7 +85,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/.ghcup /usr/share/miniconda /usr/local/share/boost /usr/local/share/chromium || true
           
           echo "▶️ [Step] Installing dependencies..."
-          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
+          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
           
           echo "▶️ [Step] Deploying 4G Swap Armor (Deterministic)..."
           sudo swapoff -a || true
@@ -119,13 +121,19 @@ jobs:
           retry timeout 35m ./scripts/feeds update -a
           
           # ✅ 終極物理防護 - 徹底切斷舊版供應鏈，並嚴格拔除不要的插件
-          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box luci-app-fstab luci-app-plugins || true
-          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins
-          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins
+          ./scripts/feeds uninstall luci-app-passwall xray-core sing-box smartdns luci-app-smartdns luci-app-fstab luci-app-plugins luci-theme-argon luci-app-argon-config || true
+          rm -rf feeds/luci/applications/luci-app-passwall feeds/packages/net/xray-core feeds/packages/net/sing-box feeds/packages/net/smartdns feeds/luci/applications/luci-app-smartdns feeds/luci/applications/luci-app-fstab feeds/luci/applications/luci-app-plugins feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config
+          rm -rf package/feeds/luci/luci-app-passwall package/feeds/packages/xray-core package/feeds/packages/sing-box package/feeds/packages/smartdns package/feeds/luci/luci-app-smartdns package/feeds/luci/luci-app-fstab package/feeds/luci/luci-app-plugins package/feeds/luci/luci-theme-argon package/feeds/luci/luci-app-argon-config
           
           echo "▶️ [Step] Cloning Passwall ecosystem (Latest Upstream)..."
           retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/openwrt-passwall-packages'
           retry bash -c 'timeout 20m git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall.git package/openwrt-passwall'
+
+          echo "▶️ [Step] Cloning luci-app-smartdns from pymumu upstream (replaces feeds copy)..."
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns'
+
+          echo "▶️ [Step] Cloning luci-theme-argon from jerrykuku upstream (replaces feeds copy)..."
+          retry bash -c 'timeout 20m git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon'
             
           # =====================================================
           # 🦀 Master Rust Transplant：Ubuntu 24.04 / LTS Toolchain Compatibility
@@ -207,6 +215,17 @@ jobs:
           echo "✅ Direct block-mount default injection removed; remaining tweak entries preserved."
           # =====================================================
 
+          # =====================================================
+          # firewall4 fullcone patch override 已撤走（2026-11-16）
+          # 上游今朝 09:55（2fe3065a "firewall4: refresh fullcone patches"）
+          # 自己刷新咗 patch：hunk #1 嘅 disable_ipv6 context 已刪、
+          # hunk #8 嘅 helper 已改為 false，現行 patch 對 master fw4
+          # 3722eadc 原樣打得上，唔使再 sed。25.12 線用分支自帶舊
+          # patch＋舊 fw4，一向原樣打得上。若上游日後 fw4 再漂移令
+          # patch 打唔上，喺呢度按日期設閘加 fixup（見 2026-10-27、
+          # 2026-11-15 兩次先例），唔好喺 patch 本體改。
+          # =====================================================
+
           echo "▶️ [Step] Installing feeds..."
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
@@ -223,7 +242,6 @@ jobs:
           sync_hash () {
             local name="$1"
             local makefile="$2"
-            local pattern="$3"
             
             if [ ! -f "$makefile" ]; then
               echo "⚠️ $name: Makefile missing, skip"
@@ -244,25 +262,32 @@ jobs:
               sed -i -E 's/^[[:space:]]*PKG_MIRROR_HASH[[:space:]]*(:=|\?=|=).*/PKG_MIRROR_HASH:=skip/' "$makefile"
             fi
             
-            # 2. 讓 OpenWrt build system 自己解析 package metadata
-            local pkg_source=""
-            pkg_source="$(
-              make -s "package/${name}/dumpinfo" 2>/dev/null |
-                sed -n 's/^Source: //p' |
-                head -n 1
-            )" || true
-            
-            pkg_source="$(
-              printf '%s' "$pkg_source" |
-                sed 's/\r$//' |
-                sed 's/^[[:space:]]*//' |
-                sed 's/[[:space:]]*$//'
-            )"
+            # 2. v7 (2026-10-09): 從 Makefile 直接解析預期檔名。
+            #    不再依賴 make dumpinfo——SDC 在 defconfig 之前執行，
+            #    dumpinfo 可能失效導致 pkg_source 為空，進而觸發 pattern 誤殺。
+            local pkg_source="" pkg_name="" pkg_version=""
+            pkg_name="$(grep -E '^[[:space:]]*PKG_NAME[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            pkg_version="$(grep -E '^[[:space:]]*PKG_VERSION[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            pkg_source="$(grep -E '^[[:space:]]*PKG_SOURCE[[:space:]]*(:=|\\?=|=)' "$makefile" | head -n 1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')"
+            # 展開 $(PKG_NAME) / $(PKG_VERSION)
+            if [ -n "$pkg_name" ]; then
+              pkg_source="$(printf '%s' "$pkg_source" | sed "s|\$(PKG_NAME)|$pkg_name|g")"
+            fi
+            if [ -n "$pkg_version" ]; then
+              pkg_source="$(printf '%s' "$pkg_source" | sed "s|\$(PKG_VERSION)|$pkg_version|g")"
+            fi
+            # 清理 CR 與空白；若仍有未展開變數則視為未知
+            pkg_source="$(printf '%s' "$pkg_source" | sed 's/\r$//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')"
+            case "$pkg_source" in
+              *'$('*) pkg_source="" ;;
+            esac
             
             if [ -n "$pkg_source" ]; then
               pkg_source="$(basename -- "$pkg_source")"
               echo "🧹 [SDC v1.4] Purging stale dl cache for exact source: $pkg_source"
               rm -f "dl/$pkg_source"
+            else
+              echo "⚠️ $name: 無法從 Makefile 解析 PKG_SOURCE，跳過精準清理"
             fi
             
             # 3. 觸發實際下載 (強制從上游抓取乾淨 Artifact，並保留錯誤可觀測性)
@@ -282,17 +307,11 @@ jobs:
               fi
             fi
             
-            # 5. Legacy / Drift Fallback
+            # 5. v7 (2026-10-09): pattern 兜底已徹底移除。
+            #    它曾在版本漂移時撿到舊版 tarball 並把錯誤 hash 寫入 Makefile。
+            #    預期檔案缺失時保留 PKG_HASH:=skip，讓 build 階段重新下載不驗證。
             if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
-              FILE="$(
-                find dl -maxdepth 1 -type f \
-                  \( -name "${pattern}*.tar.gz" \
-                  -o -name "${pattern}*.tar.xz" \
-                  -o -name "${pattern}*.zip" \) \
-                  -print 2>/dev/null |
-                  sort |
-                  head -n 1
-              )"
+              echo "⚠️ $name: expected artifact missing, keeping 'skip' (拒絕用舊版 tarball 冒充)"
             fi
             
             # 6. SHA256 Self-Healing
@@ -355,21 +374,25 @@ jobs:
             done | sort
           } > ../feeds.snapshot.txt
 
-      - name: Inject ImmWrt Backup Tool (ib v1.8)
+      - name: Inject OpenWrt Backup Tool (ib v2.0)
         run: |
           set -e
           mkdir -p openwrt/package/base-files/files/usr/bin
           cat << 'IB_SCRIPT' > openwrt/package/base-files/files/usr/bin/ib
           #!/bin/sh
 
-          VERSION="1.8"
+          VERSION="2.0"
           readonly VERSION
 
           BACKUP_DIR="${IBB_BACKUP_DIR:-/root}"
           readonly BACKUP_DIR
 
-          BACKUP="$BACKUP_DIR/immwrt-backup-latest.tar.gz"
-          readonly BACKUP
+          BACKUP="$BACKUP_DIR/openwrt-backup-latest.tar.gz"
+          # NB: not readonly — resolve_backup() may point it at the
+          # legacy 1.x filename for restore/verify/info.
+
+          BACKUP_OLD="$BACKUP_DIR/immwrt-backup-latest.tar.gz"
+          readonly BACKUP_OLD
 
           WORK="/tmp/ib-work"
           readonly WORK
@@ -395,13 +418,13 @@ jobs:
           /etc/config/passwall_server
           /etc/config/smartdns
           /etc/config/system
-          /etc/config/upnpd
           /etc/crontabs/root
           "
           readonly REQUIRED_FILES
 
           OPTIONAL_FILES="
           /etc/config/argon
+          /etc/smartdns/custom.conf
           /etc/passwall/rules/direct_host
           /etc/passwall/rules/direct_ip
           /etc/passwall/rules/proxy_host
@@ -444,6 +467,24 @@ jobs:
           }
 
 
+          # Resolve the archive to read: prefer the 2.0 filename,
+          # fall back to the legacy 1.x filename so backups made
+          # by ib <= 1.9 remain restorable. Backup (write) always
+          # uses the new name and never calls this.
+          resolve_backup()
+          {
+              [ -f "$BACKUP" ] && return 0
+
+              if [ -f "$BACKUP_OLD" ]; then
+                  printf "INFO: Legacy backup found, using %s\n" "$BACKUP_OLD"
+                  BACKUP="$BACKUP_OLD"
+                  return 0
+              fi
+
+              return 1
+          }
+
+
           #
           # Exact restore whitelist.
           #
@@ -459,9 +500,9 @@ jobs:
                   /etc/config/passwall_server|\
                   /etc/config/smartdns|\
                   /etc/config/system|\
-                  /etc/config/upnpd|\
                   /etc/crontabs/root|\
                   /etc/config/argon|\
+                  /etc/smartdns/custom.conf|\
                   /etc/passwall/rules/direct_host|\
                   /etc/passwall/rules/direct_ip|\
                   /etc/passwall/rules/proxy_host|\
@@ -478,7 +519,7 @@ jobs:
           usage()
           {
               printf \
-          "ImmWrt Backup Tool v%s
+          "OpenWrt Backup Tool v%s
           Usage:
             ib {b|backup}
             ib {r|restore}
@@ -1120,7 +1161,7 @@ jobs:
 
 
               {
-                  printf "# ImmWrt Backup Manifest\n"
+                  printf "# OpenWrt Backup Manifest\n"
                   printf "# Tool-Version: %s\n" "$VERSION"
                   printf "# Date: %s\n" \
                       "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -1236,9 +1277,9 @@ jobs:
               local f
               local tmp
 
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1398,9 +1439,9 @@ jobs:
 
           verify_cmd()
           {
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1479,9 +1520,9 @@ jobs:
 
           info_cmd()
           {
-              [ -f "$BACKUP" ] || \
+              resolve_backup || \
                   fail \
-          "Backup not found at $BACKUP" \
+          "Backup not found: $BACKUP (or legacy $BACKUP_OLD)" \
                       5
 
               gzip -t "$BACKUP" || \
@@ -1566,6 +1607,40 @@ jobs:
           esac
           IB_SCRIPT
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
+
+      - name: Set Argon as Default Theme
+        run: |
+          set -euo pipefail
+          echo "▶️ [Step] Setting Argon as the default LuCI theme on first boot..."
+          mkdir -p openwrt/package/base-files/files/etc/uci-defaults
+          cat > openwrt/package/base-files/files/etc/uci-defaults/99-argon-default-theme <<'EOF'
+          #!/bin/sh
+          # Template-injected: boot into Argon by default.
+          uci set luci.main.mediaurlbase='/luci-static/argon'
+          uci commit luci
+          exit 0
+          EOF
+          chmod 755 openwrt/package/base-files/files/etc/uci-defaults/99-argon-default-theme
+          
+      - name: Drop ImmortalWrt Video Repo (404)
+        run: |
+          set -euo pipefail
+          echo "▶️ [Step] Dropping ImmortalWrt video repo (never published, 404)..."
+          mkdir -p openwrt/package/base-files/files/etc/uci-defaults
+          cat > openwrt/package/base-files/files/etc/uci-defaults/98-drop-video-repo <<'EOF'
+          #!/bin/sh
+          # Template-injected: ImmortalWrt never publishes a video feed
+          # (packages.adb 404 on every release since 23.05 and all
+          # snapshots; official OpenWrt does publish it). Drop the video
+          # repo so `apk update` exits 0 on first boot. No-op on official
+          # OpenWrt: the guard only matches ImmortalWrt/vsean URLs.
+          [ -f /etc/apk/repositories.d/distfeeds.list ] || exit 0
+          if grep -q -e 'immortalwrt.org' -e 'mirrors.vsean.net' /etc/apk/repositories.d/distfeeds.list; then
+            sed -i '/\/video\//d' /etc/apk/repositories.d/distfeeds.list
+          fi
+          exit 0
+          EOF
+          chmod 755 openwrt/package/base-files/files/etc/uci-defaults/98-drop-video-repo
           
       - name: Generate Cache Variables
         id: var
@@ -1574,7 +1649,7 @@ jobs:
           echo "ccache_key=ccache-${{ env.CACHE_NS }}-${{ hashFiles('feeds.snapshot.txt') }}" >> $GITHUB_OUTPUT
 
       - name: Restore Cache (dl)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             openwrt/dl
@@ -1583,7 +1658,7 @@ jobs:
             dl-${{ env.CACHE_NS }}-
             
       - name: Restore Cache (ccache)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.ccache
           key: ${{ steps.var.outputs.ccache_key }}
@@ -1596,9 +1671,9 @@ jobs:
           cd openwrt
           echo "▶️ [Step] Running SDC v1.4 AFTER DL cache restore..."
           source /tmp/sdc.sh
-          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile" "sing-box-"
+          sync_hash "sing-box" "package/openwrt-passwall-packages/sing-box/Makefile"
           if [ "${INCLUDE_XRAY}" = "true" ]; then
-          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile" "Xray-core-"
+          sync_hash "xray-core" "package/openwrt-passwall-packages/xray-core/Makefile"
           fi
           set -e
           echo "🔒 [SDC v1.4] Adaptive mode completed after cache restore"
@@ -1647,10 +1722,10 @@ jobs:
             echo "CONFIG_PACKAGE_luci-app-ddns=y"
             echo "CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y"
             echo "CONFIG_PACKAGE_ddns-scripts-cloudflare=y"
-            echo "CONFIG_PACKAGE_luci-app-upnp=y"
-            echo "CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-theme-argon=y"
-            echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+            if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+              echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+            fi
             echo "CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-i18n-base-zh-cn=y"
             echo "CONFIG_PACKAGE_qemu-ga=y"
@@ -1716,7 +1791,10 @@ jobs:
           echo "✅ Xray positive capability audit passed"
           
           echo "=== 🔒 Common Required Package Config Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING FROM CONFIG: $p"; exit 1; }
           done
@@ -1771,7 +1849,10 @@ jobs:
           echo "✅ Chinese LuCI config audit passed"
 
           echo "=== 🔒 Post-Defconfig Common Required Package Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             grep -Eq "^CONFIG_PACKAGE_${p}=y$" .config || { echo "❌ REQUIRED COMMON PACKAGE MISSING AFTER DEFCONFIG: $p"; exit 1; }
           done
@@ -1834,13 +1915,55 @@ jobs:
           
           FAST_BUILD_STATUS="SUCCESS"
           echo "▶️ [Step] Starting main compilation..."
-          if ! make -j$(nproc) 2>&1 | tee >(gzip -1 -c > ../logs_build.log.gz); then
-            FAST_BUILD_STATUS="FAILED (Fallback to Debug)"
-            echo "FAST_BUILD_FAILED=true" > ../build-status.txt
-            rm -rf tmp build_dir/hostpkg staging_dir/hostpkg
-            make -j1 V=s 2>&1 | tee >(gzip -1 -c > ../logs_build_debug.log.gz) || exit 1
+          # v6 (2026-10-09): 明文 tee（消除 gzip 管線競態，失敗分類 grep 可靠），結束後再壓縮
+          if ! make -j$(nproc) 2>&1 | tee ../logs_build.log; then
+            # --- 失敗分類 1：tarball 下載類（hash 不符 / 鏡像 404）→ 直接結束，不刷屏 ---
+            if grep -qE "No more mirrors to try|Hash of the downloaded file does not match" ../logs_build.log; then
+              echo "❌ 下載階段失敗（非編譯錯誤），跳過 fallback，直接結束"
+              echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+              echo "FAST_BUILD_STATUS=FAILED (Download)" >> ../build-status.txt
+              gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+              exit 1
+            fi
+            # --- 失敗分類 2：編譯類 → 只對失敗的 package 做 verbose（有界輸出，不再全量 world） ---
+            FAILED_PKG=$(grep -m1 -oE "ERROR: package/[^ ]+ failed to build" ../logs_build.log | sed -E 's/^ERROR: //; s/ failed to build$//' || true)
+            if [ -n "$FAILED_PKG" ]; then
+              echo "🎯 失敗 package: $FAILED_PKG，單獨 verbose 重編定位（輸出有界）..."
+              if make "$FAILED_PKG/compile" -j1 V=s > ../logs_pkg_debug.log 2>&1; then
+                echo "✅ $FAILED_PKG 單編通過（疑似並行抖動），恢復 world 繼續..."
+                if make -j$(nproc) 2>&1 | tail -n 40; then
+                  FAST_BUILD_STATUS="SUCCESS (Recovered)"
+                  echo "✅ world 恢復成功"
+                else
+                  echo "❌ world 恢復失敗，最後 60 行："
+                  tail -n 60 ../logs_build.log
+                  gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+                  echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+                  exit 1
+                fi
+              else
+                echo "❌ $FAILED_PKG 單編仍失敗，關鍵錯誤："
+                echo "===================="
+                grep -a -B2 -A10 -iE "error:" ../logs_pkg_debug.log | tail -n 60 || true
+                echo "---- 原始 verbose 尾段（最後 80 行；grep 濾不到的錯誤在此，如 patch Hunk FAILED） ----"
+                tail -n 80 ../logs_pkg_debug.log
+                echo "===================="
+                gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+                gzip -1 -c ../logs_pkg_debug.log > ../logs_pkg_debug.log.gz; rm -f ../logs_pkg_debug.log
+                echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+                echo "FAST_BUILD_STATUS=FAILED (Compile: $FAILED_PKG)" >> ../build-status.txt
+                exit 1
+              fi
+            else
+              echo "⚠️ 無法定位失敗 package，顯示最後 80 行："
+              tail -n 80 ../logs_build.log
+              gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+              echo "FAST_BUILD_FAILED=true" > ../build-status.txt
+              exit 1
+            fi
           fi
           echo "FAST_BUILD_STATUS=$FAST_BUILD_STATUS" >> ../build-status.txt
+          gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
 
           {
             ccache -s
@@ -1848,8 +1971,17 @@ jobs:
             df -h "$CCACHE_DIR"
           } > ../logs_ccache.info 2>&1 || echo "ccache unavailable" > ../logs_ccache.info
           
+      - name: Upload Per-Package Debug Log (on failure)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pkg-debug-log
+          path: logs_pkg_debug.log.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Save Cache (dl)
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         if: success() && !cancelled()
         continue-on-error: true
         with:
@@ -1858,7 +1990,7 @@ jobs:
           key: ${{ steps.var.outputs.dl_key }}
           
       - name: Save Cache (ccache)
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         if: success() && !cancelled()
         continue-on-error: true
         with:
@@ -1905,7 +2037,10 @@ jobs:
           echo "✅ Final Chinese LuCI manifest audit passed"
           
           echo "=== 🔒 Common Required Package Final Manifest Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-app-upnp luci-i18n-upnp-zh-cn luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload"
+          if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
+            COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
+          fi
           for p in $COMMON_REQUIRED_PACKAGES; do
             if ! grep -Eq "(^|[[:space:]])${p}([[:space:]]|$)" release_assets/installed-packages.txt; then
               echo "❌ REQUIRED COMMON PACKAGE MISSING FROM FINAL MANIFEST: $p"
@@ -1984,7 +2119,7 @@ jobs:
           [ -s logs_ccache.info ] && install -m644 logs_ccache.info release_assets/ccache.info
           [ -s build-status.txt ] && install -m644 build-status.txt release_assets/
           [ -s logs_build.log.gz ] && install -m644 logs_build.log.gz release_assets/
-          [ -s logs_build_debug.log.gz ] && install -m644 logs_build_debug.log.gz release_assets/
+          [ -s logs_pkg_debug.log.gz ] && install -m644 logs_pkg_debug.log.gz release_assets/
           [ -s /tmp/retry_history.log ] && install -m644 /tmp/retry_history.log release_assets/
           [ -s /tmp/retry_debug.log ] && gzip -9 -c /tmp/retry_debug.log > release_assets/retry_debug.log.gz || true
           
@@ -2004,7 +2139,7 @@ jobs:
             - **顯式宣告 APK**：在設定檔中明確宣告 `CONFIG_USE_APK=y`，鎖定底層套件管理架構。
             - **三重防線審計**：Defconfig、Post-Defconfig、最終 Manifest 階段強制檢查，杜絕 `block-mount`、`automount`、`luci-app-fstab`、`luci-app-plugins`${{ env.INCLUDE_XRAY != 'true' && '、`xray-core`' || '' }} 任何形式的依賴回歸。
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages`。
-            - **備份引擎**：內建 `ib v1.8`，解耦套件強依賴，跨版本配置恢復安全。
+            - **備份引擎**：內建 `ib v2.0`，解耦套件強依賴，跨版本配置恢復安全。
             - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、官方 `wireguard-tools`、`luci-proto-wireguard` 及 `qrencode` (QR Code 支援)。
             - **自癒架構 (SDC v1.4)**：OpenWrt Native `dumpinfo` 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
             - **極致溯源與環境決定性**：`openwrt_release` 提取範圍限縮至 `target-x86_64_musl`；4G Swap 建立流程免疫 Runner Drift。
