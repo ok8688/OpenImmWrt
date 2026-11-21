@@ -227,6 +227,7 @@ jobs:
           echo "lang/rust patched: prebuilt LLVM download enabled"
           # =====================================================
 
+          retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
           # =====================================================
           # LuCI overview: add CPU usage (%) (official line only)
           # Official LuCI's status overview shows load average but
@@ -240,8 +241,11 @@ jobs:
           #     data indices, render the row after Load Average
           # Not ported: getCPUBench/getCPUInfo/getTempInfo (need
           # autocore's /etc/bench.log, /sbin/cpuinfo, /sbin/tempinfo)
-          # and the Temperature row. Runs after feeds update,
-          # before feeds install. Python heredoc with assertions
+          # and the Temperature row. Runs after feeds install, against
+          # package/feeds/luci/... - the files the build actually uses.
+          # (Patching feeds/luci/... before install does NOT survive:
+          # #7 proved it, getCPUUsage was 0 in the image. feeds install
+          # does not carry the working-tree patch into package/feeds/.)
           # fail-louds if an anchor drifts; the greps double-check.
           # NOTE: raw string - the ucode popen line carries
           # backslash escapes (\') that must reach the file untouched.
@@ -256,7 +260,7 @@ jobs:
 
 
           # --- 1. luci-base: add getCPUUsage RPC (verbatim copy of ImmortalWrt's method) ---
-          p1 = 'feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci'
+          p1 = 'package/feeds/luci/luci-base/root/usr/share/rpcd/ucode/luci'
           s = open(p1).read()
           method = r'''	getCPUUsage: {
           		call: function() {
@@ -280,7 +284,7 @@ jobs:
           open(p1, 'w').write(s)
 
           # --- 2. luci-mod-status: overview CPU usage row ---
-          p2 = 'feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js'
+          p2 = 'package/feeds/luci/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js'
           t = open(p2).read()
           declare = "var callCPUUsage = rpc.declare({\n\tobject: 'luci',\n\tmethod: 'getCPUUsage'\n});\n"
           t = replace_once(t, "var callSystemInfo = rpc.declare({\n\tobject: 'system',\n\tmethod: 'info'\n});\n", "var callSystemInfo = rpc.declare({\n\tobject: 'system',\n\tmethod: 'info'\n});\n\n" + declare, '10_system.js: declare callCPUUsage')
@@ -290,12 +294,11 @@ jobs:
           open(p2, 'w').write(t)
           print('LuCI CPU usage patch applied')
           PYEOF
-          grep -q 'getCPUUsage' feeds/luci/modules/luci-base/root/usr/share/rpcd/ucode/luci || { echo "ERROR: getCPUUsage not added to luci ucode"; exit 1; }
-          grep -q "CPU usage (%)" feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || { echo "ERROR: CPU usage row not added to 10_system.js"; exit 1; }
+          grep -q 'getCPUUsage' package/feeds/luci/luci-base/root/usr/share/rpcd/ucode/luci || { echo "ERROR: getCPUUsage not added to luci ucode"; exit 1; }
+          grep -q "CPU usage (%)" package/feeds/luci/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || { echo "ERROR: CPU usage row not added to 10_system.js"; exit 1; }
           echo "LuCI CPU usage patch applied"
           # =====================================================
 
-          retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
 
           # =====================================================
           # 🔒 Stable Drift Control v1.4 (Anti-Stale & Adaptive)
@@ -1881,14 +1884,14 @@ jobs:
             echo "CONFIG_VIRTIO_BLK=y"
             echo "CONFIG_PACKAGE_kmod-nft-offload=y"
             echo "CONFIG_PACKAGE_kmod-nft-fullcone=y"
-            echo "CONFIG_GRUB_TIMEOUT=0"
+            echo "CONFIG_GRUB_TIMEOUT=\"0\""
             echo "CONFIG_PACKAGE_block-mount=n"
             echo "CONFIG_PACKAGE_automount=n"
             echo "CONFIG_PACKAGE_luci-app-fstab=n"
             echo "CONFIG_PACKAGE_luci-app-plugins=n"
             echo "CONFIG_CCACHE=y"
           } > .config
-          grep -Eq "^CONFIG_GRUB_TIMEOUT=0$" .config || { echo "❌ GRUB_TIMEOUT NOT SET IN CONFIG"; exit 1; }
+          grep -Eq "^CONFIG_GRUB_TIMEOUT=\"0\"$" .config || { echo "❌ GRUB_TIMEOUT NOT SET IN CONFIG"; exit 1; }
           
           echo "=== 🇨🇳 Chinese LuCI Defconfig Audit ==="
           for cfg in CONFIG_PACKAGE_luci CONFIG_LUCI_LANG_zh_Hans CONFIG_PACKAGE_luci-i18n-base-zh-cn; do
