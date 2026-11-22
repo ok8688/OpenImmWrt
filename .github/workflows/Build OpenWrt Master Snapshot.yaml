@@ -294,7 +294,7 @@ jobs:
           s = open(p1).read()
           method = r'''	getCPUUsage: {
           		call: function() {
-          			const fd = popen('top -n1 | awk \'/^CPU/ {printf("%d%", 100 - $8)}\');
+          			const fd = popen('top -n1 | awk \'/^CPU/ {printf("%d%", 100 - $8)}\'');
           			if (fd) {
           				let cpuusage = fd.read('all');
           				if (!cpuusage)
