@@ -79,13 +79,14 @@ jobs:
       - name: Init SRE Environment & ABI Fingerprint
         run: |
           set -euo pipefail
+          source /tmp/sre_utils.sh
           echo "▶️ [Step] Cleaning up Runner environment..."
           sudo docker system prune -af || true
           # SRE 防呆安全網：追加 || true，避免未來 Runner 映像檔變更引發崩潰
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/lib/node_modules /opt/hostedtoolcache /usr/local/share/powershell /usr/share/rust /opt/microsoft /usr/local/.ghcup /usr/share/miniconda /usr/local/share/boost /usr/local/share/chromium || true
           
           echo "▶️ [Step] Installing dependencies..."
-          sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache
+          retry bash -c 'sudo apt-get update -qq && sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget jq golang-go ccache'
           
           echo "▶️ [Step] Deploying 4G Swap Armor (Deterministic)..."
           sudo swapoff -a || true
@@ -228,6 +229,29 @@ jobs:
           # =====================================================
 
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
+          # =====================================================
+          # LuCI menu: move Terminal from Services to System
+          # (official line only, mirrors ImmortalWrt's luci fork).
+          # Official luci-app-ttyd registers admin/services/ttyd;
+          # ImmortalWrt's fork registers admin/system/ttyd - the
+          # two menu.d files are byte-identical except those 3
+          # keys. A plain string rename reproduces ImmortalWrt
+          # exactly (verified: sed output diffs clean against
+          # immortalwrt/luci openwrt-25.12). No `order` needed:
+          # dispatcher.uc defaults missing order to weight 9999,
+          # so Terminal sorts last under System, same as IW.
+          # No ACL change: luci-app-ttyd's own acl.d file grants
+          # UCI access to `ttyd` regardless of menu position.
+          # Runs after feeds install, against package/feeds/luci/
+          # (same #7 lesson as the CPU patch above).
+          # =====================================================
+          echo "[Step] Moving Terminal menu entry Services -> System (official line only)..."
+          sed -i 's|admin/services/ttyd|admin/system/ttyd|g' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json
+          grep -q 'admin/system/ttyd' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json || { echo "ERROR: Terminal menu move failed (no admin/system/ttyd)"; exit 1; }
+          grep -q 'admin/services/ttyd' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json && { echo "ERROR: Terminal menu move incomplete (admin/services/ttyd remains)"; exit 1; }
+          echo "Terminal menu entry moved to System"
+          # =====================================================
+
           # =====================================================
           # LuCI overview: add CPU usage (%) (official line only)
           # Official LuCI's status overview shows load average but
@@ -1703,6 +1727,8 @@ jobs:
           esac
           IB_SCRIPT
           chmod 755 openwrt/package/base-files/files/usr/bin/ib
+          sh -n openwrt/package/base-files/files/usr/bin/ib || { echo "ERROR: ib script syntax check failed"; exit 1; }
+          grep -q 'VERSION="2.0"' openwrt/package/base-files/files/usr/bin/ib || { echo "ERROR: ib VERSION marker missing"; exit 1; }
 
       - name: Set Argon as Default Theme
         run: |
@@ -2091,13 +2117,14 @@ jobs:
               echo "🎯 失敗 package: $FAILED_PKG，單獨 verbose 重編定位（輸出有界）..."
               if make "$FAILED_PKG/compile" -j1 V=s > ../logs_pkg_debug.log 2>&1; then
                 echo "✅ $FAILED_PKG 單編通過（疑似並行抖動），恢復 world 繼續..."
-                if make -j$(nproc) 2>&1 | tail -n 40; then
+                if make -j$(nproc) 2>&1 | tee ../logs_build_resume.log | tail -n 40; then
                   FAST_BUILD_STATUS="SUCCESS (Recovered)"
                   echo "✅ world 恢復成功"
                 else
                   echo "❌ world 恢復失敗，最後 60 行："
-                  tail -n 60 ../logs_build.log
+                  tail -n 60 ../logs_build_resume.log
                   gzip -1 -c ../logs_build.log > ../logs_build.log.gz; rm -f ../logs_build.log
+                  gzip -1 -c ../logs_build_resume.log > ../logs_build_resume.log.gz; rm -f ../logs_build_resume.log
                   echo "FAST_BUILD_FAILED=true" > ../build-status.txt
                   exit 1
                 fi
@@ -2136,7 +2163,9 @@ jobs:
         if: always()
         with:
           name: pkg-debug-log
-          path: logs_pkg_debug.log.gz
+          path: |
+            logs_pkg_debug.log.gz
+            logs_build_resume.log.gz
           if-no-files-found: ignore
           retention-days: 7
 
@@ -2302,12 +2331,12 @@ jobs:
             - **PassWall 最新主幹同步**：即時拉取最新 `openwrt-passwall` 與 `openwrt-passwall-packages`。
             - **備份引擎**：內建 `ib v2.0`，解耦套件強依賴，跨版本配置恢復安全。
             - **網路核心擴展**：完整嵌入 `WireGuard` 核心套件、官方 `wireguard-tools`、`luci-proto-wireguard` 及 `qrencode` (QR Code 支援)。
-            - **自癒架構 (SDC v1.4)**：OpenWrt Native `dumpinfo` 解析；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
+            - **自癒架構 (SDC v1.4)**：Makefile 直接解析預期檔名；強制清除同名舊 dl 壓縮包消滅 Stale Cache；精準相容 ERE 賦值；SDC 可觀測性日誌。
             - **極致溯源與環境決定性**：`openwrt_release` 提取範圍限縮至 `target-x86_64_musl`；4G Swap 建立流程免疫 Runner Drift。
             - **快取綱要嚴格隔離**：`dl-${{ env.CACHE_NS }}-` / `ccache-${{ env.CACHE_NS }}-` 前綴搭配 `feeds.snapshot.txt` 雜湊鎖定。
             - **編譯加速**：DL cache 與 ccache 先恢復，再執行 SDC v1.4；避免 SDC 下載結果被舊 DL cache 覆蓋。
             - **x86 block-mount**：官方 `.router` 預設唔包 `block-mount`，官方 x86 Makefile 本身無 `automount`，無需 patch。
-            - **firewall4 fullcone**：四件套由 ImmortalWrt 上游拎齊——firewall4 patch、nftables 用戶態 patch、libnftnl patch、fullconenat-nft 內核模組（kmod-nft-fullcone），下次構建驗證齊晒、入埋 manifest 審計。
+            - **firewall4 fullcone**：四件套由 ImmortalWrt 上游拎齊——firewall4 patch、nftables 用戶態 patch、libnftnl patch、fullconenat-nft 內核模組（kmod-nft-fullcone），已驗證、入埋 manifest 審計。
             - **預設設定**：自寫 uci-defaults（時區 Asia/Hong_Kong、國內 NTP、packet_steering、dnsmasq log），頂替 `default-settings-chn`；autocore、luci-app-cpufreq 已剔除。
             ${{ env.INCLUDE_XRAY != 'true' && '- **Xray 動態執行期解耦**：已從源碼級物理拔除 `xray-core` 編譯依賴（繞過 LTS 凍結 Go 工具鏈與最新 Xray 源碼的編譯衝突）。**刷入後請前往 PassWall →「App 更新」頁面線上下載 Xray 核心二進位檔。**' || '- **Full TLS 能力保留**：`xray-core`、`sing-box` 與 `luci-app-passwall` 均以 Defconfig + Final Manifest 正向驗證。' }}
           files: release_assets/*
