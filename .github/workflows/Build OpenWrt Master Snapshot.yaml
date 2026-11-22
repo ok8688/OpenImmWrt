@@ -234,9 +234,15 @@ jobs:
           # no CPU usage row. ImmortalWrt's LuCI fork adds one via
           # a getCPUUsage RPC (luci-base ucode) + a row in
           # 10_system.js. Port ONLY the CPU usage bit:
-          #   * luci-base: insert getCPUUsage method (reads /proc/stat
-          #     twice, 0.3s apart; no `top`, no autocore - Q1 intact.
-          #     #8's `top` version showed "?" in browsers, replaced #9)
+          #   * luci-base: insert getCPUUsage method, ImmortalWrt's
+          #     `top -n1 | awk` version verbatim (0.1s, no autocore -
+          #     Q1 intact). #8's `top` version only looked broken in
+          #     browsers because the web session lacked the ACL grant
+          #     (fixed by the luci-cpu.json ACL below); the method
+          #     itself was never the browser problem. The /proc/stat
+          #     replacement (#9) is dropped: BusyBox `sleep` rejects
+          #     fractions (`sleep 0.3` = invalid number) and the
+          #     ucode parse variant returned 100%.
           #   * luci-mod-status: declare the RPC, resolve it, shift
           #     data indices, render the row after Load Average
           # Not ported: getCPUBench/getCPUInfo/getTempInfo (need
@@ -259,42 +265,21 @@ jobs:
               return s.replace(old, new, 1)
 
 
-          # --- 1. luci-base: add getCPUUsage RPC (/proc/stat, not ImmortalWrt's `top`) ---
+          # --- 1. luci-base: add getCPUUsage RPC (ImmortalWrt's `top` verbatim) ---
           p1 = 'package/feeds/luci/luci-base/root/usr/share/rpcd/ucode/luci'
           s = open(p1).read()
           method = r'''	getCPUUsage: {
           		call: function() {
-          			let read_cpu = function() {
-          				let content = readfile('/proc/stat');
-          				if (!content)
-          					return null;
-          				for (let line in split(content, '\n')) {
-          					if (!match(line, /^cpu /))
-          						continue;
-          					let parts = filter(split(line, ' '), s => s != '');
-          					if (length(parts) < 9)
-          						return null;
-          					let idle = (+parts[4]) + (+parts[5]);
-          					let total = 0;
-          					for (let i = 1; i < length(parts); i++)
-          						total += (+parts[i]);
-          					return { idle: idle, total: total };
-          				}
-          				return null;
-          			};
-          			let a = read_cpu();
-          			if (!a)
-          				return { cpuusage: '?' };
-          			system('sleep 0.3');
-          			let b = read_cpu();
-          			if (!b)
-          				return { cpuusage: '?' };
-          			let idle_diff = b.idle - a.idle;
-          			let total_diff = b.total - a.total;
-          			if (total_diff <= 0)
-          				return { cpuusage: '?' };
-          			let usage = 100 * (1 - idle_diff / total_diff);
-          			return { cpuusage: sprintf('%d%%', usage) };
+          			const fd = popen('top -n1 | awk \'/^CPU/ {printf("%d%", 100 - $8)}\');
+          			if (fd) {
+          				let cpuusage = fd.read('all');
+          				if (!cpuusage)
+          					cpuusage = '?';
+          				fd.close();
+          				return { cpuusage: cpuusage };
+          			} else {
+          				return { cpuusage: error() };
+          			}
           		}
           	},
 
@@ -316,6 +301,26 @@ jobs:
           PYEOF
           grep -q 'getCPUUsage' package/feeds/luci/luci-base/root/usr/share/rpcd/ucode/luci || { echo "ERROR: getCPUUsage not added to luci ucode"; exit 1; }
           grep -q "CPU usage (%)" package/feeds/luci/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || { echo "ERROR: CPU usage row not added to 10_system.js"; exit 1; }
+          # rpcd ACL: the web session needs an explicit grant to call
+          # `luci.getCPUUsage` on official OpenWrt (ImmortalWrt's
+          # luci-base.json is byte-identical and lacks it, yet IW
+          # works - the grant lives elsewhere there). Without this,
+          # ubus returns a value but the browser RPC gets "?" (live
+          # verified 2026-11-22: four browsers flipped "?" -> "0%"
+          # the moment this file landed + rpcd restarted).
+          cat > package/feeds/luci/luci-base/root/usr/share/rpcd/acl.d/luci-cpu.json <<'ACLEOF'
+          {
+              "luci-cpu-usage": {
+                  "description": "Grant access to CPU usage",
+                  "read": {
+                      "ubus": {
+                          "luci": [ "getCPUUsage" ]
+                      }
+                  }
+              }
+          }
+          ACLEOF
+          grep -q 'getCPUUsage' package/feeds/luci/luci-base/root/usr/share/rpcd/acl.d/luci-cpu.json || { echo "ERROR: luci-cpu.json ACL not written"; exit 1; }
           echo "LuCI CPU usage patch applied"
           # =====================================================
 
