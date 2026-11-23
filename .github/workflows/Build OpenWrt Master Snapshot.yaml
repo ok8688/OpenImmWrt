@@ -230,29 +230,6 @@ jobs:
 
           retry bash -c 'set -o pipefail; timeout 35m ./scripts/feeds install -a -f'
           # =====================================================
-          # LuCI menu: move Terminal from Services to System
-          # (official line only, mirrors ImmortalWrt's luci fork).
-          # Official luci-app-ttyd registers admin/services/ttyd;
-          # ImmortalWrt's fork registers admin/system/ttyd - the
-          # two menu.d files are byte-identical except those 3
-          # keys. A plain string rename reproduces ImmortalWrt
-          # exactly (verified: sed output diffs clean against
-          # immortalwrt/luci openwrt-25.12). No `order` needed:
-          # dispatcher.uc defaults missing order to weight 9999,
-          # so Terminal sorts last under System, same as IW.
-          # No ACL change: luci-app-ttyd's own acl.d file grants
-          # UCI access to `ttyd` regardless of menu position.
-          # Runs after feeds install, against package/feeds/luci/
-          # (same #7 lesson as the CPU patch above).
-          # =====================================================
-          echo "[Step] Moving Terminal menu entry Services -> System (official line only)..."
-          sed -i 's|admin/services/ttyd|admin/system/ttyd|g' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json
-          grep -q 'admin/system/ttyd' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json || { echo "ERROR: Terminal menu move failed (no admin/system/ttyd)"; exit 1; }
-          grep -q 'admin/services/ttyd' package/feeds/luci/luci-app-ttyd/root/usr/share/luci/menu.d/luci-app-ttyd.json && { echo "ERROR: Terminal menu move incomplete (admin/services/ttyd remains)"; exit 1; }
-          echo "Terminal menu entry moved to System"
-          # =====================================================
-
-          # =====================================================
           # LuCI overview: add CPU usage (%) (official line only)
           # Official LuCI's status overview shows load average but
           # no CPU usage row. ImmortalWrt's LuCI fork adds one via
@@ -1920,8 +1897,6 @@ jobs:
             echo "CONFIG_PACKAGE_qrencode=y"
             echo "CONFIG_PACKAGE_kmod-crypto-kpp=y"
             echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20poly1305=y"
-            echo "CONFIG_PACKAGE_luci-app-ttyd=y"
-            echo "CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y"
             echo "CONFIG_PACKAGE_luci-app-advanced-reboot=y"
             echo "CONFIG_PACKAGE_luci-i18n-advanced-reboot-zh-cn=y"
             echo "CONFIG_PACKAGE_htop=y"
@@ -1977,7 +1952,7 @@ jobs:
           echo "✅ Xray positive capability audit passed"
           
           echo "=== 🔒 Common Required Package Config Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
           if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
             COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
           fi
@@ -2035,7 +2010,7 @@ jobs:
           echo "✅ Chinese LuCI config audit passed"
 
           echo "=== 🔒 Post-Defconfig Common Required Package Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
           if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
             COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
           fi
@@ -2226,7 +2201,7 @@ jobs:
           echo "✅ Final Chinese LuCI manifest audit passed"
           
           echo "=== 🔒 Common Required Package Final Manifest Audit ==="
-          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-ttyd luci-i18n-ttyd-zh-cn luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
+          COMMON_REQUIRED_PACKAGES="luci luci-app-passwall luci-i18n-passwall-zh-cn sing-box geoview ca-bundle ca-certificates smartdns luci-app-smartdns luci-i18n-smartdns-zh-cn luci-app-ddns luci-i18n-ddns-zh-cn ddns-scripts-cloudflare luci-theme-argon luci-i18n-argon-config-zh-cn luci-i18n-base-zh-cn qemu-ga irqbalance kmod-wireguard wireguard-tools luci-proto-wireguard qrencode kmod-crypto-kpp kmod-crypto-lib-chacha20poly1305 luci-app-advanced-reboot luci-i18n-advanced-reboot-zh-cn htop nano curl ethtool wget-ssl unzip kmod-tcp-bbr kmod-nft-offload kmod-nft-fullcone"
           if [ "${INCLUDE_ARGON_CONFIG}" = "true" ]; then
             COMMON_REQUIRED_PACKAGES="$COMMON_REQUIRED_PACKAGES luci-app-argon-config"
           fi
